@@ -1,0 +1,114 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>Content AI Agent — Generator</title>
+  <link rel="stylesheet" href="style.css" />
+</head>
+<body>
+  <main class="page">
+    <header class="page-header">
+      <h1>Content AI Agent</h1>
+      <p class="subtitle">Generator Agent — draft content from a brief</p>
+    </header>
+
+    <form id="brief-form" class="brief-form">
+      <div class="field-row">
+        <label for="topic">Topic <span class="req">*</span></label>
+        <input id="topic" name="topic" type="text" placeholder="e.g. our new credit scoring feature" required />
+      </div>
+
+      <div class="field-row two-col">
+        <div>
+          <label for="channel">Channel <span class="req">*</span></label>
+          <select id="channel" name="channel" required>
+            <option value="" disabled selected>Select a channel</option>
+            <option value="LinkedIn">LinkedIn</option>
+            <option value="X (Twitter)">X (Twitter)</option>
+            <option value="Instagram">Instagram</option>
+            <option value="Email">Email</option>
+            <option value="Blog">Blog</option>
+          </select>
+        </div>
+        <div>
+          <label for="tone">Tone <span class="req">*</span></label>
+          <input id="tone" name="tone" type="text" placeholder="e.g. approachable and clear" required />
+        </div>
+      </div>
+
+      <div class="field-row two-col">
+        <div>
+          <label for="audience">Audience <span class="opt">optional</span></label>
+          <input id="audience" name="audience" type="text" placeholder="e.g. digital lenders" />
+        </div>
+        <div>
+          <label for="cta">CTA <span class="opt">optional</span></label>
+          <input id="cta" name="cta" type="text" placeholder="e.g. book a demo" />
+        </div>
+      </div>
+
+      <div class="field-row">
+        <label for="keyword">Keyword <span class="opt">optional</span></label>
+        <input id="keyword" name="keyword" type="text" placeholder="e.g. credit verification" />
+      </div>
+
+      <button type="submit" id="submit-btn">Generate draft</button>
+    </form>
+
+    <section id="result" class="result hidden">
+      <div class="result-header">
+        <h2>Draft</h2>
+        <div class="header-actions">
+          <button type="button" id="copy-btn" class="ghost-btn">Copy</button>
+          <button type="button" id="review-this-btn" class="ghost-btn">Review this draft</button>
+        </div>
+      </div>
+      <pre id="draft-output"></pre>
+    </section>
+
+    <p id="error-msg" class="error hidden"></p>
+
+    <hr class="divider" />
+
+    <header class="page-header">
+      <h2>Review a draft</h2>
+      <p class="subtitle">Reviewer Agent — score any draft against the brand voice doc</p>
+    </header>
+
+    <form id="review-form" class="brief-form">
+      <div class="field-row">
+        <label for="review-channel">Channel <span class="req">*</span></label>
+        <select id="review-channel" name="review-channel" required>
+          <option value="" disabled selected>Select a channel</option>
+          <option value="LinkedIn">LinkedIn</option>
+          <option value="X (Twitter)">X (Twitter)</option>
+          <option value="Instagram">Instagram</option>
+          <option value="Email">Email</option>
+          <option value="Blog">Blog</option>
+        </select>
+      </div>
+
+      <div class="field-row">
+        <label for="review-draft">Draft text <span class="req">*</span></label>
+        <textarea id="review-draft" name="review-draft" rows="8" placeholder="Paste the draft to review..." required></textarea>
+      </div>
+
+      <button type="submit" id="review-submit-btn">Review draft</button>
+    </form>
+
+    <section id="review-result" class="result hidden">
+      <div class="result-header">
+        <h2>Feedback report</h2>
+        <span id="verdict-badge" class="badge"></span>
+      </div>
+      <p id="review-summary" class="review-summary"></p>
+      <div id="review-categories" class="review-categories"></div>
+    </section>
+
+    <p id="review-error-msg" class="error hidden"></p>
+  </main>
+
+  <script src="script.js"></script>
+</body>
+</html>

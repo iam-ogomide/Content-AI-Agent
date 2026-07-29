@@ -1,0 +1,239 @@
+:root {
+  --bg: #f7f8fa;
+  --surface: #ffffff;
+  --text: #1a1d23;
+  --muted: #6b7280;
+  --border: #e2e5ea;
+  --accent: #2563eb;
+  --accent-hover: #1d4ed8;
+  --error: #dc2626;
+}
+
+@media (prefers-color-scheme: dark) {
+  :root {
+    --bg: #14161a;
+    --surface: #1c1f26;
+    --text: #e8eaed;
+    --muted: #9aa1ac;
+    --border: #2c3038;
+    --accent: #3b82f6;
+    --accent-hover: #60a5fa;
+    --error: #f87171;
+  }
+}
+
+* { box-sizing: border-box; }
+
+body {
+  margin: 0;
+  font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
+  background: var(--bg);
+  color: var(--text);
+}
+
+.page {
+  max-width: 640px;
+  margin: 0 auto;
+  padding: 48px 20px 80px;
+}
+
+.page-header h1 {
+  margin: 0 0 4px;
+  font-size: 1.6rem;
+}
+
+.subtitle {
+  margin: 0 0 32px;
+  color: var(--muted);
+}
+
+.brief-form {
+  background: var(--surface);
+  border: 1px solid var(--border);
+  border-radius: 12px;
+  padding: 24px;
+  display: flex;
+  flex-direction: column;
+  gap: 18px;
+}
+
+.field-row label {
+  display: block;
+  font-size: 0.85rem;
+  font-weight: 600;
+  margin-bottom: 6px;
+}
+
+.req { color: var(--error); font-weight: 400; }
+.opt { color: var(--muted); font-weight: 400; font-size: 0.8rem; }
+
+.two-col {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 18px;
+}
+
+input, select {
+  width: 100%;
+  padding: 10px 12px;
+  border-radius: 8px;
+  border: 1px solid var(--border);
+  background: var(--bg);
+  color: var(--text);
+  font-size: 0.95rem;
+}
+
+input:focus, select:focus {
+  outline: none;
+  border-color: var(--accent);
+}
+
+button {
+  cursor: pointer;
+  font-size: 0.95rem;
+}
+
+#submit-btn {
+  margin-top: 4px;
+  background: var(--accent);
+  color: white;
+  border: none;
+  border-radius: 8px;
+  padding: 12px;
+  font-weight: 600;
+}
+
+#submit-btn:hover { background: var(--accent-hover); }
+#submit-btn:disabled { opacity: 0.6; cursor: not-allowed; }
+
+.ghost-btn {
+  background: transparent;
+  border: 1px solid var(--border);
+  color: var(--text);
+  border-radius: 6px;
+  padding: 6px 12px;
+  font-size: 0.85rem;
+}
+
+.result {
+  margin-top: 28px;
+  background: var(--surface);
+  border: 1px solid var(--border);
+  border-radius: 12px;
+  padding: 20px 24px;
+}
+
+.result-header {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+}
+
+.result-header h2 {
+  margin: 0;
+  font-size: 1rem;
+}
+
+#draft-output {
+  white-space: pre-wrap;
+  font-family: inherit;
+  margin: 12px 0 0;
+  line-height: 1.5;
+}
+
+.error {
+  margin-top: 20px;
+  color: var(--error);
+  font-size: 0.9rem;
+}
+
+.hidden { display: none; }
+
+.header-actions {
+  display: flex;
+  gap: 8px;
+}
+
+.divider {
+  border: none;
+  border-top: 1px solid var(--border);
+  margin: 48px 0 32px;
+}
+
+textarea {
+  width: 100%;
+  padding: 10px 12px;
+  border-radius: 8px;
+  border: 1px solid var(--border);
+  background: var(--bg);
+  color: var(--text);
+  font-size: 0.95rem;
+  font-family: inherit;
+  resize: vertical;
+}
+
+textarea:focus {
+  outline: none;
+  border-color: var(--accent);
+}
+
+.badge {
+  font-size: 0.78rem;
+  font-weight: 600;
+  padding: 4px 10px;
+  border-radius: 999px;
+  text-transform: uppercase;
+  letter-spacing: 0.02em;
+}
+
+.badge.pass {
+  background: rgba(34, 197, 94, 0.15);
+  color: #16a34a;
+}
+
+.badge.needs_work {
+  background: rgba(220, 38, 38, 0.12);
+  color: var(--error);
+}
+
+.review-summary {
+  color: var(--muted);
+  margin: 12px 0 20px;
+  line-height: 1.5;
+}
+
+.review-categories {
+  display: flex;
+  flex-direction: column;
+  gap: 14px;
+}
+
+.category-row {
+  border-top: 1px solid var(--border);
+  padding-top: 12px;
+}
+
+.category-row:first-child {
+  border-top: none;
+  padding-top: 0;
+}
+
+.category-header {
+  display: flex;
+  justify-content: space-between;
+  font-weight: 600;
+  font-size: 0.9rem;
+  margin-bottom: 4px;
+}
+
+.category-score {
+  color: var(--muted);
+  font-weight: 400;
+}
+
+.category-notes {
+  margin: 0;
+  color: var(--muted);
+  font-size: 0.88rem;
+  line-height: 1.45;
+}
