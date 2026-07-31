@@ -93,7 +93,7 @@ button {
   font-size: 0.95rem;
 }
 
-#submit-btn {
+.primary-btn {
   margin-top: 4px;
   background: var(--accent);
   color: white;
@@ -103,8 +103,8 @@ button {
   font-weight: 600;
 }
 
-#submit-btn:hover { background: var(--accent-hover); }
-#submit-btn:disabled { opacity: 0.6; cursor: not-allowed; }
+.primary-btn:hover { background: var(--accent-hover); }
+.primary-btn:disabled { opacity: 0.6; cursor: not-allowed; }
 
 .ghost-btn {
   background: transparent;
@@ -134,11 +134,14 @@ button {
   font-size: 1rem;
 }
 
-#draft-output {
+.result pre {
   white-space: pre-wrap;
+  overflow-wrap: break-word;
+  word-break: break-word;
   font-family: inherit;
   margin: 12px 0 0;
   line-height: 1.5;
+  max-width: 100%;
 }
 
 .error {

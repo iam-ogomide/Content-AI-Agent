@@ -140,3 +140,77 @@ reviewThisBtn.addEventListener("click", () => {
   reviewForm.scrollIntoView({ behavior: "smooth", block: "start" });
   runReview(draft, channel);
 });
+
+const repurposeForm = document.getElementById("repurpose-form");
+const repurposeSubmitBtn = document.getElementById("repurpose-submit-btn");
+const repurposeResultSection = document.getElementById("repurpose-result");
+const repurposeOutput = document.getElementById("repurpose-output");
+const repurposeErrorMsg = document.getElementById("repurpose-error-msg");
+const repurposeCopyBtn = document.getElementById("repurpose-copy-btn");
+const repurposeReviewBtn = document.getElementById("repurpose-review-btn");
+
+const FORMAT_TO_CHANNEL = {
+  "LinkedIn post": "LinkedIn",
+  "X/Twitter thread": "X (Twitter)",
+  "Instagram caption": "Instagram",
+  "Email summary": "Email",
+  "Carousel copy": "Instagram",
+  "Quote card": "Instagram",
+};
+
+repurposeForm.addEventListener("submit", async (event) => {
+  event.preventDefault();
+
+  repurposeErrorMsg.classList.add("hidden");
+  repurposeResultSection.classList.add("hidden");
+  repurposeSubmitBtn.disabled = true;
+  repurposeSubmitBtn.textContent = "Repurposing...";
+
+  const payload = {
+    source_content: repurposeForm["source-content"].value,
+    target_format: repurposeForm["target-format"].value,
+    tone_shift: repurposeForm["tone-shift"].value,
+    word_limit: repurposeForm["word-limit"].value,
+  };
+
+  try {
+    const response = await fetch("/api/repurpose", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(payload),
+    });
+
+    const data = await response.json();
+
+    if (!response.ok) {
+      throw new Error(data.error || "Something went wrong");
+    }
+
+    repurposeOutput.textContent = data.result;
+    repurposeResultSection.classList.remove("hidden");
+  } catch (err) {
+    repurposeErrorMsg.textContent = err.message;
+    repurposeErrorMsg.classList.remove("hidden");
+  } finally {
+    repurposeSubmitBtn.disabled = false;
+    repurposeSubmitBtn.textContent = "Repurpose content";
+  }
+});
+
+repurposeCopyBtn.addEventListener("click", async () => {
+  await navigator.clipboard.writeText(repurposeOutput.textContent);
+  repurposeCopyBtn.textContent = "Copied";
+  setTimeout(() => (repurposeCopyBtn.textContent = "Copy"), 1500);
+});
+
+repurposeReviewBtn.addEventListener("click", () => {
+  const draft = repurposeOutput.textContent;
+  const targetFormat = repurposeForm["target-format"].value;
+  const channel = FORMAT_TO_CHANNEL[targetFormat] || "";
+
+  reviewForm["review-draft"].value = draft;
+  reviewForm["review-channel"].value = channel;
+
+  reviewForm.scrollIntoView({ behavior: "smooth", block: "start" });
+  runReview(draft, channel);
+});

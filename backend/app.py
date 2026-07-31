@@ -3,6 +3,7 @@ from pathlib import Path
 from flask import Flask, jsonify, request, send_from_directory
 
 from generator import generate_draft
+from repurposer import repurpose_content
 from reviewer import review_draft
 
 FRONTEND_DIR = Path(__file__).resolve().parent.parent / "frontend"
@@ -37,6 +38,28 @@ def generate():
         return jsonify({"error": f"Generation failed: {e}"}), 502
 
     return jsonify({"draft": draft})
+
+
+@app.route("/api/repurpose", methods=["POST"])
+def repurpose():
+    data = request.get_json(silent=True) or {}
+
+    source_content = (data.get("source_content") or "").strip()
+    target_format = (data.get("target_format") or "").strip()
+    tone_shift = (data.get("tone_shift") or "").strip() or None
+    word_limit = (data.get("word_limit") or "").strip() or None
+
+    if not source_content or not target_format:
+        return jsonify({"error": "source_content and target_format are required"}), 400
+
+    try:
+        result = repurpose_content(source_content, target_format, tone_shift, word_limit)
+    except RuntimeError as e:
+        return jsonify({"error": str(e)}), 500
+    except Exception as e:
+        return jsonify({"error": f"Repurposing failed: {e}"}), 502
+
+    return jsonify({"result": result})
 
 
 @app.route("/api/review", methods=["POST"])

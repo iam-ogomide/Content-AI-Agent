@@ -53,7 +53,7 @@
         <input id="keyword" name="keyword" type="text" placeholder="e.g. credit verification" />
       </div>
 
-      <button type="submit" id="submit-btn">Generate draft</button>
+      <button type="submit" id="submit-btn" class="primary-btn">Generate draft</button>
     </form>
 
     <section id="result" class="result hidden">
@@ -68,6 +68,59 @@
     </section>
 
     <p id="error-msg" class="error hidden"></p>
+
+    <hr class="divider" />
+
+    <header class="page-header">
+      <h2>Repurpose content</h2>
+      <p class="subtitle">Repurposer Agent — turn existing content into a new format</p>
+    </header>
+
+    <form id="repurpose-form" class="brief-form">
+      <div class="field-row">
+        <label for="source-content">Source content <span class="req">*</span></label>
+        <textarea id="source-content" name="source-content" rows="8" placeholder="Paste a blog post, transcript, or deck content..." required></textarea>
+      </div>
+
+      <div class="field-row">
+        <label for="target-format">Target format <span class="req">*</span></label>
+        <select id="target-format" name="target-format" required>
+          <option value="" disabled selected>Select a target format</option>
+          <option value="LinkedIn post">LinkedIn post</option>
+          <option value="X/Twitter thread">X/Twitter thread</option>
+          <option value="Instagram caption">Instagram caption</option>
+          <option value="Email summary">Email summary</option>
+          <option value="Carousel copy">Carousel copy</option>
+          <option value="Quote card">Quote card</option>
+        </select>
+      </div>
+
+      <div class="field-row two-col">
+        <div>
+          <label for="tone-shift">Tone shift <span class="opt">optional</span></label>
+          <input id="tone-shift" name="tone-shift" type="text" placeholder="e.g. make it more casual" />
+        </div>
+        <div>
+          <label for="word-limit">Word limit <span class="opt">optional</span></label>
+          <input id="word-limit" name="word-limit" type="number" placeholder="e.g. 100" />
+        </div>
+      </div>
+
+      <button type="submit" id="repurpose-submit-btn" class="primary-btn">Repurpose content</button>
+    </form>
+
+    <section id="repurpose-result" class="result hidden">
+      <div class="result-header">
+        <h2>Repurposed content</h2>
+        <div class="header-actions">
+          <button type="button" id="repurpose-copy-btn" class="ghost-btn">Copy</button>
+          <button type="button" id="repurpose-review-btn" class="ghost-btn">Review this</button>
+        </div>
+      </div>
+      <pre id="repurpose-output"></pre>
+    </section>
+
+    <p id="repurpose-error-msg" class="error hidden"></p>
 
     <hr class="divider" />
 
@@ -94,7 +147,7 @@
         <textarea id="review-draft" name="review-draft" rows="8" placeholder="Paste the draft to review..." required></textarea>
       </div>
 
-      <button type="submit" id="review-submit-btn">Review draft</button>
+      <button type="submit" id="review-submit-btn" class="primary-btn">Review draft</button>
     </form>
 
     <section id="review-result" class="result hidden">
