@@ -63,6 +63,10 @@ REPURPOSING INSTRUCTIONS:
 {constraints_block}
 
 Output only the repurposed content itself. No preamble, no explanation, no markdown headers.
+
+CRITICAL — one person, one problem, one solution:
+- Address a single reader as "you" starting from the FIRST sentence. Never open with "many businesses," "lenders across Africa," "companies like yours," or any other crowd/third-person framing.
+- Center the piece on exactly one problem and one solution for that one person — do not stack multiple pain points or multiple CTAs.
 """
 
 

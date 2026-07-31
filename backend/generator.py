@@ -57,6 +57,11 @@ Instructions:
 - Match the tone and channel conventions described in the brand voice doc.
 - If a CTA is given, end with it clearly.
 - Respect the target channel's typical length and format (e.g. X/Twitter is short, LinkedIn allows more room, blog can be longer-form).
+
+CRITICAL — one person, one problem, one solution:
+- Address a single reader as "you" starting from the FIRST sentence. Never open with "many businesses," "lenders across Africa," "companies like yours," or any other crowd/third-person framing.
+- Center the piece on exactly one problem and one solution for that one person — do not stack multiple pain points or multiple CTAs.
+- For B2B briefs, "you" is the one decision-maker at that business, not the business itself.
 """
 
 

@@ -90,7 +90,7 @@ DRAFT TO REVIEW:
 ---
 
 Score each category 0-100 and give concise, actionable notes (1-2 sentences each):
-- tone: does it match the brand voice doc's tone and vocabulary rules?
+- tone: does it match the brand voice doc's tone and vocabulary rules? Also check the one-person rule explicitly: does it address a single reader as "you" from the first sentence, with one problem and one solution — rather than opening with a crowd/third-person framing like "many businesses" or "lenders across Africa"? Penalize violations of this rule specifically and name it in the notes.
 - clarity: is it easy to understand, one idea per piece, no unexplained jargon?
 - cta_strength: is the CTA (if any) clear and singular? If there's no CTA, note that.
 - grammar: spelling, grammar, punctuation issues.
