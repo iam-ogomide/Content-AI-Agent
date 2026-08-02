@@ -67,6 +67,12 @@ body {
 .req { color: var(--error); font-weight: 400; }
 .opt { color: var(--muted); font-weight: 400; font-size: 0.8rem; }
 
+.field-hint {
+  color: var(--muted);
+  font-size: 0.78rem;
+  margin: 6px 0 0;
+}
+
 .two-col {
   display: grid;
   grid-template-columns: 1fr 1fr;

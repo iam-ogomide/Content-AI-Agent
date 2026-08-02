@@ -94,17 +94,24 @@ function renderReport(report) {
   reviewResultSection.classList.remove("hidden");
 }
 
-async function runReview(draft, channel) {
+async function runReview(draft, channel, brief) {
   reviewErrorMsg.classList.add("hidden");
   reviewResultSection.classList.add("hidden");
   reviewSubmitBtn.disabled = true;
   reviewSubmitBtn.textContent = "Reviewing...";
 
+  // Brief is optional. Sending it lets brand rules with stated exceptions
+  // resolve against what the piece was actually asked to be.
+  const payload = { draft, channel };
+  if (brief && brief.trim()) {
+    payload.brief = brief.trim();
+  }
+
   try {
     const response = await fetch("/api/review", {
       method: "POST",
       headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ draft, channel }),
+      body: JSON.stringify(payload),
     });
 
     const data = await response.json();
@@ -127,18 +134,26 @@ reviewForm.addEventListener("submit", (event) => {
   event.preventDefault();
   const draft = reviewForm["review-draft"].value;
   const channel = reviewForm["review-channel"].value;
-  runReview(draft, channel);
+  const brief = reviewForm["review-brief"].value;
+  runReview(draft, channel, brief);
 });
 
 reviewThisBtn.addEventListener("click", () => {
   const draft = draftOutput.textContent;
   const channel = form.channel.value;
 
+  // The generate form already knows what was asked for, so carry it across
+  // rather than making the user retype it.
+  const briefParts = [form.topic.value, form.tone.value && `${form.tone.value} tone`, form.audience.value]
+    .filter((part) => part && part.trim())
+    .join(", ");
+
   reviewForm["review-draft"].value = draft;
   reviewForm["review-channel"].value = channel;
+  reviewForm["review-brief"].value = briefParts;
 
   reviewForm.scrollIntoView({ behavior: "smooth", block: "start" });
-  runReview(draft, channel);
+  runReview(draft, channel, briefParts);
 });
 
 const repurposeForm = document.getElementById("repurpose-form");
@@ -208,9 +223,12 @@ repurposeReviewBtn.addEventListener("click", () => {
   const targetFormat = repurposeForm["target-format"].value;
   const channel = FORMAT_TO_CHANNEL[targetFormat] || "";
 
+  const brief = targetFormat ? `repurposed into a ${targetFormat}` : "";
+
   reviewForm["review-draft"].value = draft;
   reviewForm["review-channel"].value = channel;
+  reviewForm["review-brief"].value = brief;
 
   reviewForm.scrollIntoView({ behavior: "smooth", block: "start" });
-  runReview(draft, channel);
+  runReview(draft, channel, brief);
 });

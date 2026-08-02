@@ -71,11 +71,21 @@ def review():
     draft = (data.get("draft") or "").strip()
     channel = (data.get("channel") or "").strip()
 
+    # Optional. What the piece was asked to be — brand rules with stated
+    # exceptions (section 3's one-person rule, section 8's CTA expectation)
+    # can't resolve without it, so the Reviewer defaults to penalizing.
+    # Accepts a dict of brief fields, or a plain sentence of intent.
+    brief = data.get("brief") or None
+    if isinstance(brief, str):
+        brief = {"asked for": brief.strip()} if brief.strip() else None
+    elif not isinstance(brief, dict):
+        brief = None
+
     if not draft or not channel:
         return jsonify({"error": "draft and channel are required"}), 400
 
     try:
-        report = review_draft(draft, channel)
+        report = review_draft(draft, channel, brief)
     except RuntimeError as e:
         return jsonify({"error": str(e)}), 500
     except Exception as e:

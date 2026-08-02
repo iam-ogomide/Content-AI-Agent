@@ -72,8 +72,28 @@ def _load_brand_voice():
     return BRAND_VOICE_PATH.read_text(encoding="utf-8")
 
 
-def build_prompt(draft, channel):
+def build_prompt(draft, channel, brief=None):
     brand_voice = _load_brand_voice()
+
+    # Several brand rules are conditional on what the piece was asked to be —
+    # section 3's one-person rule is waived for pieces that explicitly call for
+    # market-level framing, and section 8's CTA expectation doesn't apply to a
+    # piece never meant to carry one. Without the brief the Reviewer can only
+    # guess at intent from the prose, so it defaults to penalizing. When the
+    # caller knows the brief, pass it.
+    brief_block = ""
+    if brief:
+        asked_for = "\n".join(f"- {k}: {v}" for k, v in brief.items() if v)
+        if asked_for:
+            brief_block = f"""
+WHAT THIS PIECE WAS ASKED TO BE:
+{asked_for}
+
+Judge the draft against this brief, not against a generic ideal. Where a brand rule
+has a stated exception and the brief invokes it, apply the exception rather than the
+default rule — and say so in the notes. Do not penalize the draft for lacking
+something the brief never asked for.
+"""
 
     return f"""You are the Reviewer Agent for CreditChek's marketing team.
 Review the draft below against the brand voice doc and general content quality standards for the given channel.
@@ -83,14 +103,14 @@ Review the draft below against the brand voice doc and general content quality s
 --- END BRAND VOICE DOC ---
 
 TARGET CHANNEL: {channel}
-
+{brief_block}
 DRAFT TO REVIEW:
 ---
 {draft}
 ---
 
 Score each category 0-100 and give concise, actionable notes (1-2 sentences each):
-- tone: does it match the brand voice doc's tone and vocabulary rules? Also check the one-person rule explicitly: does it address a single reader as "you" from the first sentence, with one problem and one solution — rather than opening with a crowd/third-person framing like "many businesses" or "lenders across Africa"? Penalize violations of this rule specifically and name it in the notes.
+- tone: does it match the brand voice doc's tone and vocabulary rules? Check section 3 of the doc ("one person, one problem, one solution") explicitly and score against it as written, including its stated exception. Penalize violations of it specifically and name the rule in the notes.
 - clarity: is it easy to understand, one idea per piece, no unexplained jargon?
 - cta_strength: is the CTA (if any) clear and singular? If there's no CTA, note that.
 - grammar: spelling, grammar, punctuation issues.
@@ -102,12 +122,14 @@ summary is 2-3 sentences on the single most important thing to fix, or confirmat
 """
 
 
-def review_draft(draft, channel):
+def review_draft(draft, channel, brief=None):
+    """Score a draft. `brief` is optional — pass it when the caller knows what
+    the piece was asked to be, so conditional brand rules resolve correctly."""
     if not draft or not channel:
         raise ValueError("draft and channel are required")
 
     client = _get_client()
-    prompt = build_prompt(draft, channel)
+    prompt = build_prompt(draft, channel, brief)
 
     response = client.models.generate_content(
         model=MODEL_NAME,

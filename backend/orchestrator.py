@@ -8,8 +8,7 @@ This is the brain, it never writes content itself. Its job is four things:
   4. Assemble one coherent response from however many agents ran.
 
 Sub-agents declare themselves in the AGENTS registry below, so adding the
-Repurposer and Planner later is a registry entry rather than a rewrite of the
-routing logic.
+Planner later is a registry entry rather than a rewrite of the routing logic.
 """
 
 import json
@@ -20,6 +19,7 @@ from google import genai
 from google.genai import types
 
 from generator import generate_draft
+from repurposer import repurpose_content
 from reviewer import review_draft
 
 load_dotenv()
@@ -63,6 +63,18 @@ AGENTS = {
         "consumes": None,
         "produces": "draft",
     },
+    "repurpose": {
+        "fn": repurpose_content,
+        "label": "Repurposer",
+        "required": ["source_content", "target_format"],
+        "optional": ["tone_shift", "word_limit"],
+        "consumes": "source_content",
+        "produces": "repurposed",
+        # This agent names its inputs differently from the rest of the system:
+        # its "source_content" is what everyone else calls the draft. Map the
+        # param onto the brief key that holds it rather than renaming either.
+        "aliases": {"source_content": "draft"},
+    },
     "review": {
         "fn": review_draft,
         "label": "Reviewer",
@@ -70,12 +82,30 @@ AGENTS = {
         "optional": [],
         "consumes": "draft",
         "produces": "report",
+        # Several brand rules are conditional on what the piece was asked to be.
+        # The Reviewer can't see that from prose alone, so hand it the brief.
+        "wants_brief": True,
     },
 }
 
-# Intents the router may return but that aren't built yet (phases 3 and 4).
+# Repurpose targets, and the channel each one lands on so a follow-up review
+# scores it against the right conventions.
+FORMAT_TO_CHANNEL = {
+    "LinkedIn post": "LinkedIn",
+    "X/Twitter thread": "X (Twitter)",
+    "Instagram caption": "Instagram",
+    "Email summary": "Email",
+    "Carousel copy": "Instagram",
+    "Quote card": "Instagram",
+}
+TARGET_FORMATS = list(FORMAT_TO_CHANNEL)
+
+# Brief keys that describe the *intent* of a piece, as opposed to its content or
+# the mechanics of a revision. Only these are worth showing the Reviewer.
+BRIEF_INTENT_KEYS = ["topic", "channel", "tone", "audience", "cta", "keyword", "word_limit"]
+
+# Intents the router may return but that aren't built yet (phase 4).
 NOT_BUILT = {
-    "repurpose": "The Repurposer Agent isn't built yet — that's phase 3.",
     "plan": "The Planner Agent isn't built yet — that's phase 4.",
 }
 
@@ -97,6 +127,8 @@ ROUTE_SCHEMA = {
         "keyword": {"type": "string"},
         "word_limit": {"type": "integer"},
         "draft": {"type": "string"},
+        "target_format": {"type": "string", "enum": TARGET_FORMATS},
+        "tone_shift": {"type": "string"},
         "revision_note": {"type": "string"},
         "auto_revise": {"type": "boolean"},
         "is_followup": {"type": "boolean"},
@@ -117,7 +149,9 @@ AVAILABLE INTENTS:
 
 CHAINING: return multiple intents in the order they should run. "Write a LinkedIn post
 and check the tone" is ["generate", "review"]. Reviewing what was just generated is a
-chain, not two separate requests.
+chain, not two separate requests. "Write a blog post and turn it into a thread" is
+["generate", "repurpose"]. Repurposing the last draft is a repurpose on its own — do not
+re-run generate unless the user asks for new content.
 
 EXTRACTION RULES:
 - channel must be exactly one of: {channels}. Map what the user says onto these
@@ -128,6 +162,12 @@ EXTRACTION RULES:
   For character limits on X, leave word_limit unset; the channel handles that.
 - draft: only fill this if the user pasted actual content to be reviewed or repurposed.
   Do not put a description of content here.
+- target_format: for repurpose requests only, exactly one of: {formats}. Map what the user
+  says onto these ("thread" -> "X/Twitter thread", "carousel" -> "Carousel copy",
+  "quote graphic" -> "Quote card", "newsletter version" -> "Email summary"). Omit it if the
+  user asked to repurpose but did not say into what.
+- tone_shift: for repurpose requests, only if the user asks for a different tone than the
+  source ("make it more casual"). Use tone_shift here, not tone.
 - Omit any field the user did not give you. Do not guess or fill in defaults.
 
 AUTO-REVISE: set auto_revise true only when the user asks for content to be brought up
@@ -212,6 +252,7 @@ def route(message, session=None):
 
     prompt = ROUTER_PROMPT.format(
         channels=", ".join(f'"{c}"' for c in CHANNELS),
+        formats=", ".join(f'"{f}"' for f in TARGET_FORMATS),
         history_block=history_block,
         draft_block=draft_block,
         message=message,
@@ -237,20 +278,30 @@ def _resolve_params(intent, spec, brief, chain_output):
     params = {}
     missing = []
 
+    aliases = spec.get("aliases", {})
+
     for name in spec["required"] + spec["optional"]:
         value = None
+        brief_key = aliases.get(name, name)
 
         # A chained value takes precedence: reviewing the draft that was just
         # generated should use that draft, not a stale one from the session.
         if name == spec["consumes"] and chain_output is not None:
             value = chain_output
-        elif name in brief:
-            value = brief[name]
+        elif brief_key in brief:
+            value = brief[brief_key]
 
         if value is not None:
             params[name] = value
         elif name in spec["required"]:
             missing.append(name)
+
+    # Agents that judge a draft need to know what was asked for, not just what
+    # was produced — a rule with a stated exception can't resolve without it.
+    if spec.get("wants_brief"):
+        intent_brief = {k: brief[k] for k in BRIEF_INTENT_KEYS if brief.get(k)}
+        if intent_brief:
+            params["brief"] = intent_brief
 
     return params, missing
 
@@ -260,6 +311,8 @@ QUESTIONS = {
     "channel": f"Which channel? ({', '.join(CHANNELS)})",
     "tone": "What tone should it take?",
     "draft": "Paste the draft you want reviewed.",
+    "source_content": "Paste the content you want repurposed.",
+    "target_format": f"What should I repurpose it into? ({', '.join(TARGET_FORMATS)})",
 }
 
 # Cap on the generate -> review -> revise cycle. Each extra attempt is two more
@@ -284,17 +337,21 @@ def _revision_note_from(report):
     return " ".join(p for p in parts if p)
 
 
-def _auto_revise(generate_spec, review_spec, gen_params, channel):
+def _auto_revise(generate_spec, review_spec, gen_params, channel, brief=None):
     """Generate, review, and revise until the draft passes or attempts run out.
 
     This is the one genuinely agentic loop in the system: the Reviewer's verdict
     drives another Generator call with no user input. It is bounded on purpose.
+
+    The brief goes to the Reviewer as well as the Generator. Without it the loop
+    can spend every attempt chasing a rule the brief exempted the piece from.
     """
     attempts = []
     draft = generate_spec["fn"](**gen_params)
+    review_kwargs = {"brief": brief} if brief else {}
 
     for _ in range(MAX_REVISE_ATTEMPTS):
-        report = review_spec["fn"](draft=draft, channel=channel)
+        report = review_spec["fn"](draft=draft, channel=channel, **review_kwargs)
         attempts.append({"score": report.get("overall_score"), "verdict": report.get("verdict")})
 
         if report.get("verdict") == "pass":
@@ -308,7 +365,7 @@ def _auto_revise(generate_spec, review_spec, gen_params, channel):
 
     # Out of attempts: score the final revision so the caller reports the draft
     # it is actually returning, not the previous one's verdict.
-    report = review_spec["fn"](draft=draft, channel=channel)
+    report = review_spec["fn"](draft=draft, channel=channel, **review_kwargs)
     attempts.append({"score": report.get("overall_score"), "verdict": report.get("verdict")})
     return draft, report, attempts
 
@@ -367,8 +424,9 @@ def handle_message(message, session_id="default"):
     runnable = [i for i in intents if i in AGENTS]
     if not runnable:
         result["reply"] = (
-            "I can write a draft or review one. Tell me what to write about and "
-            "which channel, or paste a draft you want scored."
+            "I can write a draft, review one, or repurpose one into another format. "
+            "Tell me what to write about and which channel, paste a draft you want "
+            "scored, or say what to turn existing content into."
         )
         session["history"].append({"role": "agent", "text": result["reply"]})
         return result
@@ -388,8 +446,9 @@ def handle_message(message, session_id="default"):
 
         # A revision note from the user's own message applies to the first draft
         # only; after that the Reviewer's feedback drives each pass.
+        intent_brief = {k: brief[k] for k in BRIEF_INTENT_KEYS if brief.get(k)}
         draft, report, attempts = _auto_revise(
-            gen_spec, AGENTS["review"], gen_params, gen_params["channel"]
+            gen_spec, AGENTS["review"], gen_params, gen_params["channel"], intent_brief
         )
 
         session["last_draft"] = draft
@@ -441,6 +500,17 @@ def handle_message(message, session_id="default"):
             session["last_draft"] = output
             brief["draft"] = output
             replies.append(f"Here's a {params['channel']} draft.")
+        elif spec["produces"] == "repurposed":
+            # The repurposed piece becomes the current draft, so a following
+            # review scores it rather than the source it came from. Its channel
+            # follows from the format, which is what the Reviewer needs.
+            session["last_draft"] = output
+            brief["draft"] = output
+            channel = FORMAT_TO_CHANNEL.get(params["target_format"])
+            if channel:
+                brief["channel"] = channel
+            chain_output = output
+            replies.append(f"Repurposed into {params['target_format']}.")
         elif spec["produces"] == "report":
             verdict = "Looks good" if output.get("verdict") == "pass" else "Needs work"
             replies.append(f"{verdict} — {output.get('overall_score')}/100. {output.get('summary', '')}")
