@@ -11,6 +11,17 @@ MODEL_NAME = os.getenv("GEMINI_MODEL", "gemini-2.5-flash")
 
 _client = None
 
+# Hard platform limits and house length conventions per channel. The platform
+# limits (X's 280 chars, Instagram's 2200) are enforced by the channel itself;
+# the rest are conventions that keep drafts publishable without editing down.
+CHANNEL_LIMITS = {
+    "X (Twitter)": "280 characters maximum — this is a hard platform limit. Count characters, not words. If the idea will not fit, cut it down rather than running over.",
+    "LinkedIn": "Aim for 150-250 words. The first 2 lines must hook before the 'see more' cutoff.",
+    "Instagram": "Aim for 50-125 words. 2200 characters is the hard platform cap.",
+    "Email": "Aim for 150-200 words in the body. Subject line under 50 characters.",
+    "Blog": "600-1200 words unless the brief says otherwise.",
+}
+
 
 def _get_client():
     global _client
@@ -26,7 +37,8 @@ def _load_brand_voice():
     return BRAND_VOICE_PATH.read_text(encoding="utf-8")
 
 
-def build_prompt(topic, channel, tone, audience=None, cta=None, keyword=None):
+def build_prompt(topic, channel, tone, audience=None, cta=None, keyword=None, word_limit=None,
+                 previous_draft=None, revision_note=None):
     brand_voice = _load_brand_voice()
 
     brief_lines = [
@@ -40,10 +52,35 @@ def build_prompt(topic, channel, tone, audience=None, cta=None, keyword=None):
         brief_lines.append(f"CTA: {cta}")
     if keyword:
         brief_lines.append(f"Keyword to include: {keyword}")
+    if word_limit:
+        brief_lines.append(f"Hard word limit: {word_limit} words maximum")
     brief = "\n".join(brief_lines)
 
+    length_rule = CHANNEL_LIMITS.get(channel, "Respect the target channel's typical length and format.")
+    if word_limit:
+        length_rule = f"Hard limit: {word_limit} words maximum. This overrides the channel default. ({length_rule})"
+
+    # Revising an existing draft is a different job from writing one, so the task
+    # line and an extra block change when a previous draft is supplied. Nothing
+    # here applies to a first draft.
+    revision_block = ""
+    task_line = "Write a first-draft piece of content strictly following the brand voice doc below."
+    if previous_draft and revision_note:
+        task_line = "Revise an existing draft, strictly following the brand voice doc below."
+        revision_block = f"""
+--- PREVIOUS DRAFT ---
+{previous_draft}
+--- END PREVIOUS DRAFT ---
+
+REVISION REQUESTED: {revision_note}
+
+Revise the draft above. Keep everything that already works — wording, structure, and
+phrasing the request does not touch. Change only what the request asks for. Do not
+rewrite from scratch, and do not add new claims or sections that were not asked for.
+"""
+
     return f"""You are the Generator Agent for CreditChek's marketing team.
-Write a first-draft piece of content strictly following the brand voice doc below.
+{task_line}
 
 --- BRAND VOICE DOC ---
 {brand_voice}
@@ -51,12 +88,16 @@ Write a first-draft piece of content strictly following the brand voice doc belo
 
 CONTENT BRIEF:
 {brief}
+{revision_block}
+LENGTH REQUIREMENT (non-negotiable):
+{length_rule}
 
 Instructions:
-- Write only the content itself. No preamble, no explanation, no markdown headers.
+- Write only the content itself. No preamble, no explanation, no sign-off to the reader about what you did.
+- Output plain text only. No markdown of any kind — no headers, no **bold**, no backticks, no bullet syntax. If the brief gives a keyword, weave it into a sentence as ordinary words.
 - Match the tone and channel conventions described in the brand voice doc.
 - If a CTA is given, end with it clearly.
-- Respect the target channel's typical length and format (e.g. X/Twitter is short, LinkedIn allows more room, blog can be longer-form).
+- The length requirement above is a constraint, not a target to fill. Shorter is fine.
 
 CRITICAL — one person, one problem, one solution:
 - Address a single reader as "you" starting from the FIRST sentence. Never open with "many businesses," "lenders across Africa," "companies like yours," or any other crowd/third-person framing.
@@ -65,12 +106,14 @@ CRITICAL — one person, one problem, one solution:
 """
 
 
-def generate_draft(topic, channel, tone, audience=None, cta=None, keyword=None):
+def generate_draft(topic, channel, tone, audience=None, cta=None, keyword=None, word_limit=None,
+                   previous_draft=None, revision_note=None):
     if not topic or not channel or not tone:
         raise ValueError("topic, channel, and tone are required")
 
     client = _get_client()
-    prompt = build_prompt(topic, channel, tone, audience, cta, keyword)
+    prompt = build_prompt(topic, channel, tone, audience, cta, keyword, word_limit,
+                          previous_draft, revision_note)
 
     response = client.models.generate_content(
         model=MODEL_NAME,

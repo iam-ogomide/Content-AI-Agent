@@ -4,6 +4,8 @@ from flask import Flask, jsonify, request, send_from_directory
 
 from generator import generate_draft
 from repurposer import repurpose_content
+
+from orchestrator import handle_message, reset_session
 from reviewer import review_draft
 
 FRONTEND_DIR = Path(__file__).resolve().parent.parent / "frontend"
@@ -80,6 +82,34 @@ def review():
         return jsonify({"error": f"Review failed: {e}"}), 502
 
     return jsonify({"report": report})
+
+
+@app.route("/api/chat", methods=["POST"])
+def chat():
+    data = request.get_json(silent=True) or {}
+
+    message = (data.get("message") or "").strip()
+    session_id = (data.get("session_id") or "default").strip() or "default"
+
+    if not message:
+        return jsonify({"error": "message is required"}), 400
+
+    try:
+        result = handle_message(message, session_id)
+    except RuntimeError as e:
+        return jsonify({"error": str(e)}), 500
+    except Exception as e:
+        return jsonify({"error": f"Orchestration failed: {e}"}), 502
+
+    return jsonify(result)
+
+
+@app.route("/api/chat/reset", methods=["POST"])
+def chat_reset():
+    data = request.get_json(silent=True) or {}
+    session_id = (data.get("session_id") or "default").strip() or "default"
+    reset_session(session_id)
+    return jsonify({"ok": True})
 
 
 if __name__ == "__main__":
