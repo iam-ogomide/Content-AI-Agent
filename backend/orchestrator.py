@@ -19,6 +19,7 @@ from google import genai
 from google.genai import types
 
 from generator import generate_draft
+from planner import ICPS, PILLARS, generate_plan
 from repurposer import repurpose_content
 from reviewer import review_draft
 
@@ -63,6 +64,19 @@ AGENTS = {
         "consumes": None,
         "produces": "draft",
     },
+    "plan": {
+        "fn": generate_plan,
+        "label": "Planner",
+        "required": ["timeframe", "channels"],
+        "optional": ["pillars", "theme", "icp", "posts_per_week"],
+        # A calendar is a chain starter, and it deliberately does not feed the
+        # Generator: 12 slots would mean 12 drafts of a plan the user has not
+        # read yet. Drafting a slot is a separate request.
+        "consumes": None,
+        # Not "plan": result["plan"] already holds the routed intent list, and
+        # this would silently overwrite it.
+        "produces": "calendar",
+    },
     "repurpose": {
         "fn": repurpose_content,
         "label": "Repurposer",
@@ -104,10 +118,9 @@ TARGET_FORMATS = list(FORMAT_TO_CHANNEL)
 # the mechanics of a revision. Only these are worth showing the Reviewer.
 BRIEF_INTENT_KEYS = ["topic", "channel", "tone", "audience", "cta", "keyword", "word_limit"]
 
-# Intents the router may return but that aren't built yet (phase 4).
-NOT_BUILT = {
-    "plan": "The Planner Agent isn't built yet — that's phase 4.",
-}
+# Intents the router may return but that aren't built yet. All four agents in
+# the brief are live; this stays as the hook for whatever comes next.
+NOT_BUILT = {}
 
 ROUTE_SCHEMA = {
     "type": "object",
@@ -129,6 +142,12 @@ ROUTE_SCHEMA = {
         "draft": {"type": "string"},
         "target_format": {"type": "string", "enum": TARGET_FORMATS},
         "tone_shift": {"type": "string"},
+        "timeframe": {"type": "string"},
+        "channels": {"type": "array", "items": {"type": "string", "enum": CHANNELS}},
+        "pillars": {"type": "array", "items": {"type": "string", "enum": PILLARS}},
+        "theme": {"type": "string"},
+        "icp": {"type": "string", "enum": ICPS},
+        "posts_per_week": {"type": "integer"},
         "revision_note": {"type": "string"},
         "auto_revise": {"type": "boolean"},
         "is_followup": {"type": "boolean"},
@@ -168,6 +187,12 @@ EXTRACTION RULES:
   user asked to repurpose but did not say into what.
 - tone_shift: for repurpose requests, only if the user asks for a different tone than the
   source ("make it more casual"). Use tone_shift here, not tone.
+- For plan requests only: timeframe is the span in the user's own words ("next 2 weeks",
+  "August", "Q4"). channels is a LIST of every channel the calendar should cover — use
+  `channels`, not `channel`, and include all of them. If the user says "everything" or
+  names no channel, omit the field and it will be asked for.
+- pillars, theme, icp, posts_per_week: plan requests only, and only if the user says so.
+  theme is a campaign or thread to build the calendar around ("our diaspora push").
 - Omit any field the user did not give you. Do not guess or fill in defaults.
 
 AUTO-REVISE: set auto_revise true only when the user asks for content to be brought up
@@ -313,6 +338,8 @@ QUESTIONS = {
     "draft": "Paste the draft you want reviewed.",
     "source_content": "Paste the content you want repurposed.",
     "target_format": f"What should I repurpose it into? ({', '.join(TARGET_FORMATS)})",
+    "timeframe": "What period should the calendar cover? (e.g. next 2 weeks, August)",
+    "channels": f"Which channels should it cover? ({', '.join(CHANNELS)})",
 }
 
 # Cap on the generate -> review -> revise cycle. Each extra attempt is two more
@@ -424,9 +451,10 @@ def handle_message(message, session_id="default"):
     runnable = [i for i in intents if i in AGENTS]
     if not runnable:
         result["reply"] = (
-            "I can write a draft, review one, or repurpose one into another format. "
-            "Tell me what to write about and which channel, paste a draft you want "
-            "scored, or say what to turn existing content into."
+            "I can write a draft, review one, repurpose one into another format, or "
+            "build a content calendar. Tell me what to write about and which channel, "
+            "paste a draft you want scored, say what to turn existing content into, or "
+            "ask for a plan for a given period."
         )
         session["history"].append({"role": "agent", "text": result["reply"]})
         return result
@@ -500,6 +528,16 @@ def handle_message(message, session_id="default"):
             session["last_draft"] = output
             brief["draft"] = output
             replies.append(f"Here's a {params['channel']} draft.")
+        elif spec["produces"] == "calendar":
+            # A plan is not content, so it does not become last_draft — a later
+            # "make it shorter" must not try to revise a calendar.
+            slots = output.get("slots", [])
+            channels = sorted({s.get("channel") for s in slots if s.get("channel")})
+            replies.append(
+                f"Planned {len(slots)} slots for {output.get('timeframe', 'the period')}"
+                f"{' across ' + ', '.join(channels) if channels else ''}. "
+                f"{output.get('coverage_notes', '')}"
+            )
         elif spec["produces"] == "repurposed":
             # The repurposed piece becomes the current draft, so a following
             # review scores it rather than the source it came from. Its channel

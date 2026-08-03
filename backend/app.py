@@ -3,6 +3,7 @@ from pathlib import Path
 from flask import Flask, jsonify, request, send_from_directory
 
 from generator import generate_draft
+from planner import generate_plan
 from repurposer import repurpose_content
 
 from orchestrator import handle_message, reset_session
@@ -62,6 +63,33 @@ def repurpose():
         return jsonify({"error": f"Repurposing failed: {e}"}), 502
 
     return jsonify({"result": result})
+
+
+@app.route("/api/plan", methods=["POST"])
+def plan():
+    data = request.get_json(silent=True) or {}
+
+    timeframe = (data.get("timeframe") or "").strip()
+    channels = data.get("channels") or []
+    if isinstance(channels, str):
+        channels = [c.strip() for c in channels.split(",") if c.strip()]
+
+    pillars = data.get("pillars") or None
+    theme = (data.get("theme") or "").strip() or None
+    icp = (data.get("icp") or "").strip() or None
+    posts_per_week = data.get("posts_per_week") or None
+
+    if not timeframe or not channels:
+        return jsonify({"error": "timeframe and channels are required"}), 400
+
+    try:
+        calendar = generate_plan(timeframe, channels, pillars, theme, icp, posts_per_week)
+    except RuntimeError as e:
+        return jsonify({"error": str(e)}), 500
+    except Exception as e:
+        return jsonify({"error": f"Planning failed: {e}"}), 502
+
+    return jsonify({"calendar": calendar})
 
 
 @app.route("/api/review", methods=["POST"])
