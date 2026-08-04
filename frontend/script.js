@@ -1,65 +1,8 @@
-const form = document.getElementById("brief-form");
-const submitBtn = document.getElementById("submit-btn");
-const resultSection = document.getElementById("result");
-const draftOutput = document.getElementById("draft-output");
-const errorMsg = document.getElementById("error-msg");
-const copyBtn = document.getElementById("copy-btn");
-
-form.addEventListener("submit", async (event) => {
-  event.preventDefault();
-
-  errorMsg.classList.add("hidden");
-  resultSection.classList.add("hidden");
-  submitBtn.disabled = true;
-  submitBtn.textContent = "Generating...";
-
-  const payload = {
-    topic: form.topic.value,
-    channel: form.channel.value,
-    tone: form.tone.value,
-    audience: form.audience.value,
-    cta: form.cta.value,
-    keyword: form.keyword.value,
-  };
-
-  try {
-    const response = await fetch("/api/generate", {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify(payload),
-    });
-
-    const data = await response.json();
-
-    if (!response.ok) {
-      throw new Error(data.error || "Something went wrong");
-    }
-
-    draftOutput.textContent = data.draft;
-    resultSection.classList.remove("hidden");
-  } catch (err) {
-    errorMsg.textContent = err.message;
-    errorMsg.classList.remove("hidden");
-  } finally {
-    submitBtn.disabled = false;
-    submitBtn.textContent = "Generate draft";
-  }
-});
-
-copyBtn.addEventListener("click", async () => {
-  await navigator.clipboard.writeText(draftOutput.textContent);
-  copyBtn.textContent = "Copied";
-  setTimeout(() => (copyBtn.textContent = "Copy"), 1500);
-});
-
-const reviewForm = document.getElementById("review-form");
-const reviewSubmitBtn = document.getElementById("review-submit-btn");
-const reviewResultSection = document.getElementById("review-result");
-const reviewErrorMsg = document.getElementById("review-error-msg");
-const verdictBadge = document.getElementById("verdict-badge");
-const reviewSummary = document.getElementById("review-summary");
-const reviewCategories = document.getElementById("review-categories");
-const reviewThisBtn = document.getElementById("review-this-btn");
+const chatLog = document.getElementById("chat-log");
+const chatForm = document.getElementById("chat-form");
+const chatInput = document.getElementById("chat-input");
+const sendBtn = document.getElementById("send-btn");
+const resetBtn = document.getElementById("reset-btn");
 
 const CATEGORY_LABELS = {
   tone: "Tone",
@@ -69,12 +12,112 @@ const CATEGORY_LABELS = {
   seo_basics: "SEO basics",
 };
 
-function renderReport(report) {
-  verdictBadge.textContent = report.verdict === "pass" ? "Pass" : "Needs work";
-  verdictBadge.className = `badge ${report.verdict}`;
-  reviewSummary.textContent = `Overall score: ${report.overall_score}/100 — ${report.summary}`;
+// Persists across a page reload (same tab) so the conversation survives a
+// refresh, but a new tab gets a fresh session. The Orchestrator's own memory
+// is in-process and keyed by this id.
+function getSessionId() {
+  let id = sessionStorage.getItem("session_id");
+  if (!id) {
+    id = crypto.randomUUID ? crypto.randomUUID() : `sess-${Date.now()}-${Math.random().toString(16).slice(2)}`;
+    sessionStorage.setItem("session_id", id);
+  }
+  return id;
+}
 
-  reviewCategories.innerHTML = "";
+const sessionId = getSessionId();
+
+function scrollToBottom() {
+  chatLog.scrollTop = chatLog.scrollHeight;
+}
+
+function appendMessage(role, buildContent) {
+  const wrapper = document.createElement("div");
+  wrapper.className = `message ${role}`;
+
+  const bubble = document.createElement("div");
+  bubble.className = "bubble";
+  buildContent(bubble);
+
+  wrapper.appendChild(bubble);
+  chatLog.appendChild(wrapper);
+  scrollToBottom();
+  return wrapper;
+}
+
+function appendUserMessage(text) {
+  appendMessage("user", (bubble) => {
+    bubble.textContent = text;
+  });
+}
+
+function appendTypingIndicator() {
+  return appendMessage("agent", (bubble) => {
+    bubble.classList.add("typing");
+    bubble.innerHTML = "<span></span><span></span><span></span>";
+  });
+}
+
+function appendErrorMessage(text) {
+  appendMessage("agent", (bubble) => {
+    bubble.classList.add("error-bubble");
+    bubble.textContent = text;
+  });
+}
+
+function makeCopyButton(getText) {
+  const btn = document.createElement("button");
+  btn.type = "button";
+  btn.className = "ghost-btn copy-btn";
+  btn.textContent = "Copy";
+  btn.addEventListener("click", async () => {
+    await navigator.clipboard.writeText(getText());
+    btn.textContent = "Copied";
+    setTimeout(() => (btn.textContent = "Copy"), 1500);
+  });
+  return btn;
+}
+
+function renderTextCard(container, title, text) {
+  const card = document.createElement("div");
+  card.className = "result-card";
+
+  const header = document.createElement("div");
+  header.className = "result-card-header";
+  const h = document.createElement("h3");
+  h.textContent = title;
+  header.appendChild(h);
+  header.appendChild(makeCopyButton(() => text));
+  card.appendChild(header);
+
+  const pre = document.createElement("pre");
+  pre.textContent = text;
+  card.appendChild(pre);
+
+  container.appendChild(card);
+}
+
+function renderReport(container, report) {
+  const card = document.createElement("div");
+  card.className = "result-card";
+
+  const header = document.createElement("div");
+  header.className = "result-card-header";
+  const h = document.createElement("h3");
+  h.textContent = "Feedback report";
+  header.appendChild(h);
+  const badge = document.createElement("span");
+  badge.className = `badge ${report.verdict}`;
+  badge.textContent = report.verdict === "pass" ? "Pass" : "Needs work";
+  header.appendChild(badge);
+  card.appendChild(header);
+
+  const summary = document.createElement("p");
+  summary.className = "review-summary";
+  summary.textContent = `Overall score: ${report.overall_score}/100 — ${report.summary}`;
+  card.appendChild(summary);
+
+  const categories = document.createElement("div");
+  categories.className = "review-categories";
   for (const key of Object.keys(CATEGORY_LABELS)) {
     const category = report[key];
     if (!category) continue;
@@ -86,149 +129,157 @@ function renderReport(report) {
         <span>${CATEGORY_LABELS[key]}</span>
         <span class="category-score">${category.score}/100</span>
       </div>
-      <p class="category-notes">${category.notes}</p>
+      <p class="category-notes"></p>
     `;
-    reviewCategories.appendChild(row);
+    row.querySelector(".category-notes").textContent = category.notes;
+    categories.appendChild(row);
   }
+  card.appendChild(categories);
 
-  reviewResultSection.classList.remove("hidden");
+  container.appendChild(card);
 }
 
-async function runReview(draft, channel, brief) {
-  reviewErrorMsg.classList.add("hidden");
-  reviewResultSection.classList.add("hidden");
-  reviewSubmitBtn.disabled = true;
-  reviewSubmitBtn.textContent = "Reviewing...";
+function renderCalendar(container, calendar) {
+  const card = document.createElement("div");
+  card.className = "result-card";
 
-  // Brief is optional. Sending it lets brand rules with stated exceptions
-  // resolve against what the piece was actually asked to be.
-  const payload = { draft, channel };
-  if (brief && brief.trim()) {
-    payload.brief = brief.trim();
+  const header = document.createElement("div");
+  header.className = "result-card-header";
+  const h = document.createElement("h3");
+  h.textContent = `Content calendar — ${calendar.timeframe || ""}`;
+  header.appendChild(h);
+  card.appendChild(header);
+
+  const slots = calendar.slots || [];
+  const tableWrap = document.createElement("div");
+  tableWrap.className = "calendar-table-wrap";
+  const table = document.createElement("table");
+  table.className = "calendar-table";
+  table.innerHTML = `
+    <thead>
+      <tr>
+        <th>Date</th><th>Channel</th><th>Pillar</th><th>Topic</th>
+        <th>Angle</th><th>Tone</th><th>ICP</th><th>CTA</th>
+      </tr>
+    </thead>
+  `;
+  const tbody = document.createElement("tbody");
+  for (const slot of slots) {
+    const row = document.createElement("tr");
+    for (const key of ["date", "channel", "pillar", "topic", "angle", "tone", "icp", "cta"]) {
+      const td = document.createElement("td");
+      td.textContent = slot[key] || "—";
+      row.appendChild(td);
+    }
+    tbody.appendChild(row);
+  }
+  table.appendChild(tbody);
+  tableWrap.appendChild(table);
+  card.appendChild(tableWrap);
+
+  if (calendar.coverage_notes) {
+    const p = document.createElement("p");
+    p.className = "review-summary";
+    p.textContent = calendar.coverage_notes;
+    card.appendChild(p);
+  }
+  if (calendar.cadence_notes) {
+    const p = document.createElement("p");
+    p.className = "review-summary";
+    p.textContent = calendar.cadence_notes;
+    card.appendChild(p);
   }
 
+  container.appendChild(card);
+}
+
+function renderAgentResponse(bubble, data) {
+  const reply = document.createElement("p");
+  reply.className = "reply-text";
+  reply.textContent = data.reply || "";
+  bubble.appendChild(reply);
+
+  // Render whatever this turn actually produced, in the order the agents ran.
+  const ran = data.ran || [];
+  for (const intent of ran) {
+    if (intent === "generate" && data.draft) {
+      renderTextCard(bubble, "Draft", data.draft);
+    } else if (intent === "repurpose" && data.repurposed) {
+      renderTextCard(bubble, "Repurposed content", data.repurposed);
+    } else if (intent === "review" && data.report) {
+      renderReport(bubble, data.report);
+    } else if (intent === "plan" && data.calendar) {
+      renderCalendar(bubble, data.calendar);
+    }
+  }
+}
+
+async function sendMessage(message) {
+  appendUserMessage(message);
+  chatInput.value = "";
+  chatInput.style.height = "auto";
+  sendBtn.disabled = true;
+
+  const typingEl = appendTypingIndicator();
+
   try {
-    const response = await fetch("/api/review", {
+    const response = await fetch("/api/chat", {
       method: "POST",
       headers: { "Content-Type": "application/json" },
-      body: JSON.stringify(payload),
+      body: JSON.stringify({ message, session_id: sessionId }),
     });
 
     const data = await response.json();
+    typingEl.remove();
 
     if (!response.ok) {
       throw new Error(data.error || "Something went wrong");
     }
 
-    renderReport(data.report);
+    appendMessage("agent", (bubble) => renderAgentResponse(bubble, data));
   } catch (err) {
-    reviewErrorMsg.textContent = err.message;
-    reviewErrorMsg.classList.remove("hidden");
+    typingEl.remove();
+    appendErrorMessage(err.message);
   } finally {
-    reviewSubmitBtn.disabled = false;
-    reviewSubmitBtn.textContent = "Review draft";
+    sendBtn.disabled = false;
+    chatInput.focus();
   }
 }
 
-reviewForm.addEventListener("submit", (event) => {
+chatForm.addEventListener("submit", (event) => {
   event.preventDefault();
-  const draft = reviewForm["review-draft"].value;
-  const channel = reviewForm["review-channel"].value;
-  const brief = reviewForm["review-brief"].value;
-  runReview(draft, channel, brief);
+  const message = chatInput.value.trim();
+  if (!message) return;
+  sendMessage(message);
 });
 
-reviewThisBtn.addEventListener("click", () => {
-  const draft = draftOutput.textContent;
-  const channel = form.channel.value;
-
-  // The generate form already knows what was asked for, so carry it across
-  // rather than making the user retype it.
-  const briefParts = [form.topic.value, form.tone.value && `${form.tone.value} tone`, form.audience.value]
-    .filter((part) => part && part.trim())
-    .join(", ");
-
-  reviewForm["review-draft"].value = draft;
-  reviewForm["review-channel"].value = channel;
-  reviewForm["review-brief"].value = briefParts;
-
-  reviewForm.scrollIntoView({ behavior: "smooth", block: "start" });
-  runReview(draft, channel, briefParts);
-});
-
-const repurposeForm = document.getElementById("repurpose-form");
-const repurposeSubmitBtn = document.getElementById("repurpose-submit-btn");
-const repurposeResultSection = document.getElementById("repurpose-result");
-const repurposeOutput = document.getElementById("repurpose-output");
-const repurposeErrorMsg = document.getElementById("repurpose-error-msg");
-const repurposeCopyBtn = document.getElementById("repurpose-copy-btn");
-const repurposeReviewBtn = document.getElementById("repurpose-review-btn");
-
-const FORMAT_TO_CHANNEL = {
-  "LinkedIn post": "LinkedIn",
-  "X/Twitter thread": "X (Twitter)",
-  "Instagram caption": "Instagram",
-  "Email summary": "Email",
-  "Carousel copy": "Instagram",
-  "Quote card": "Instagram",
-};
-
-repurposeForm.addEventListener("submit", async (event) => {
-  event.preventDefault();
-
-  repurposeErrorMsg.classList.add("hidden");
-  repurposeResultSection.classList.add("hidden");
-  repurposeSubmitBtn.disabled = true;
-  repurposeSubmitBtn.textContent = "Repurposing...";
-
-  const payload = {
-    source_content: repurposeForm["source-content"].value,
-    target_format: repurposeForm["target-format"].value,
-    tone_shift: repurposeForm["tone-shift"].value,
-    word_limit: repurposeForm["word-limit"].value,
-  };
-
-  try {
-    const response = await fetch("/api/repurpose", {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify(payload),
-    });
-
-    const data = await response.json();
-
-    if (!response.ok) {
-      throw new Error(data.error || "Something went wrong");
-    }
-
-    repurposeOutput.textContent = data.result;
-    repurposeResultSection.classList.remove("hidden");
-  } catch (err) {
-    repurposeErrorMsg.textContent = err.message;
-    repurposeErrorMsg.classList.remove("hidden");
-  } finally {
-    repurposeSubmitBtn.disabled = false;
-    repurposeSubmitBtn.textContent = "Repurpose content";
+chatInput.addEventListener("keydown", (event) => {
+  if (event.key === "Enter" && !event.shiftKey) {
+    event.preventDefault();
+    chatForm.requestSubmit();
   }
 });
 
-repurposeCopyBtn.addEventListener("click", async () => {
-  await navigator.clipboard.writeText(repurposeOutput.textContent);
-  repurposeCopyBtn.textContent = "Copied";
-  setTimeout(() => (repurposeCopyBtn.textContent = "Copy"), 1500);
+chatInput.addEventListener("input", () => {
+  chatInput.style.height = "auto";
+  chatInput.style.height = `${Math.min(chatInput.scrollHeight, 200)}px`;
 });
 
-repurposeReviewBtn.addEventListener("click", () => {
-  const draft = repurposeOutput.textContent;
-  const targetFormat = repurposeForm["target-format"].value;
-  const channel = FORMAT_TO_CHANNEL[targetFormat] || "";
+resetBtn.addEventListener("click", async () => {
+  await fetch("/api/chat/reset", {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ session_id: sessionId }),
+  });
+  chatLog.innerHTML = "";
+  appendMessage("agent", (bubble) => {
+    bubble.textContent =
+      "New conversation started. Ask me to write a draft, review one, repurpose content, or build a content calendar.";
+  });
+});
 
-  const brief = targetFormat ? `repurposed into a ${targetFormat}` : "";
-
-  reviewForm["review-draft"].value = draft;
-  reviewForm["review-channel"].value = channel;
-  reviewForm["review-brief"].value = brief;
-
-  reviewForm.scrollIntoView({ behavior: "smooth", block: "start" });
-  runReview(draft, channel, brief);
+// Greeting on first load.
+appendMessage("agent", (bubble) => {
+  bubble.textContent =
+    "Hi — I can write a draft, review one, repurpose content into another format, or build a content calendar. What do you need?";
 });

@@ -189,8 +189,10 @@ EXTRACTION RULES:
   source ("make it more casual"). Use tone_shift here, not tone.
 - For plan requests only: timeframe is the span in the user's own words ("next 2 weeks",
   "August", "Q4"). channels is a LIST of every channel the calendar should cover — use
-  `channels`, not `channel`, and include all of them. If the user says "everything" or
-  names no channel, omit the field and it will be asked for.
+  `channels`, not `channel`, and include all of them. This applies even to a short
+  follow-up naming just one channel ("linkedin" in answer to "which channels should it
+  cover?") — put it in `channels` as a single-item list, never in `channel`. If the user
+  says "everything" or names no channel, omit the field and it will be asked for.
 - pillars, theme, icp, posts_per_week: plan requests only, and only if the user says so.
   theme is a campaign or thread to build the calendar around ("our diaspora push").
 - Omit any field the user did not give you. Do not guess or fill in defaults.
@@ -410,6 +412,20 @@ def handle_message(message, session_id="default"):
     is_followup = routed.pop("is_followup", False)
     reasoning = routed.pop("reasoning", "")
     auto_revise = routed.pop("auto_revise", False)
+
+    # A bare follow-up naming one channel ("linkedin") sometimes lands in the
+    # singular `channel` slot instead of the plural `channels` a plan needs.
+    # Left alone, `channels` never fills and the same question repeats forever.
+    # Safe to correct only when nothing else in this turn wants the singular
+    # field.
+    if (
+        "plan" in intents
+        and "generate" not in intents
+        and "review" not in intents
+        and "channels" not in routed
+        and "channel" in routed
+    ):
+        routed["channels"] = [routed.pop("channel")]
 
     # Whatever is left in `routed` is extracted brief params. On a follow-up we
     # layer them over the remembered brief; on a new request they replace it.
