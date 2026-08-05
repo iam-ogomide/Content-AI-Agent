@@ -81,3 +81,16 @@ def repurpose_content(source_content, target_format, tone_shift=None, word_limit
         contents=prompt,
     )
     return response.text
+
+
+def repurpose_content_stream(source_content, target_format, tone_shift=None, word_limit=None):
+    """Same call as repurpose_content, but yields text as Gemini streams it back."""
+    if not source_content or not target_format:
+        raise ValueError("source_content and target_format are required")
+
+    client = _get_client()
+    prompt = build_prompt(source_content, target_format, tone_shift, word_limit)
+
+    for chunk in client.models.generate_content_stream(model=MODEL_NAME, contents=prompt):
+        if chunk.text:
+            yield chunk.text

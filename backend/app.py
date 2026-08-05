@@ -1,12 +1,13 @@
+import json
 from pathlib import Path
 
-from flask import Flask, jsonify, request, send_from_directory
+from flask import Flask, Response, jsonify, request, send_from_directory, stream_with_context
 
 from generator import generate_draft
 from planner import generate_plan
 from repurposer import repurpose_content
 
-from orchestrator import handle_message, reset_session
+from orchestrator import handle_message_stream, reset_session
 from reviewer import review_draft
 
 FRONTEND_DIR = Path(__file__).resolve().parent.parent / "frontend"
@@ -132,14 +133,22 @@ def chat():
     if not message:
         return jsonify({"error": "message is required"}), 400
 
-    try:
-        result = handle_message(message, session_id)
-    except RuntimeError as e:
-        return jsonify({"error": str(e)}), 500
-    except Exception as e:
-        return jsonify({"error": f"Orchestration failed: {e}"}), 502
+    # Newline-delimited JSON: one event object per line. text_start/text_chunk/
+    # text_done stream a draft or repurposed piece as Gemini generates it; the
+    # final "result" line carries the same payload /api/chat used to return
+    # outright, for whatever didn't stream (reply text, review report, calendar).
+    # Errors surface as their own event rather than an HTTP status, since the
+    # response has already started by the time one can occur.
+    def event_stream():
+        try:
+            for event in handle_message_stream(message, session_id):
+                yield json.dumps(event) + "\n"
+        except RuntimeError as e:
+            yield json.dumps({"type": "error", "error": str(e)}) + "\n"
+        except Exception as e:
+            yield json.dumps({"type": "error", "error": f"Orchestration failed: {e}"}) + "\n"
 
-    return jsonify(result)
+    return Response(stream_with_context(event_stream()), mimetype="application/x-ndjson")
 
 
 @app.route("/api/chat/reset", methods=["POST"])

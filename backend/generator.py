@@ -116,3 +116,18 @@ def generate_draft(topic, channel, tone, audience=None, cta=None, keyword=None, 
         contents=prompt,
     )
     return response.text
+
+
+def generate_draft_stream(topic, channel, tone, audience=None, cta=None, keyword=None, word_limit=None,
+                          previous_draft=None, revision_note=None):
+    """Same call as generate_draft, but yields text as Gemini streams it back."""
+    if not topic or not channel or not tone:
+        raise ValueError("topic, channel, and tone are required")
+
+    client = _get_client()
+    prompt = build_prompt(topic, channel, tone, audience, cta, keyword, word_limit,
+                          previous_draft, revision_note)
+
+    for chunk in client.models.generate_content_stream(model=MODEL_NAME, contents=prompt):
+        if chunk.text:
+            yield chunk.text

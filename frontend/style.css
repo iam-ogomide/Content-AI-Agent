@@ -215,9 +215,34 @@ button {
   line-height: 1.5;
 }
 
-.copy-btn {
+.result-card pre.streaming::after {
+  content: "▍";
+  display: inline-block;
+  margin-left: 1px;
+  color: var(--accent);
+  animation: cursor-blink 0.9s step-start infinite;
+}
+
+@keyframes cursor-blink {
+  50% { opacity: 0; }
+}
+
+.result-card-actions {
+  display: flex;
+  gap: 6px;
+  flex-shrink: 0;
+}
+
+.copy-btn,
+.review-btn {
   padding: 4px 10px;
   font-size: 0.78rem;
+}
+
+.review-error {
+  color: var(--error);
+  font-size: 0.82rem;
+  margin: 8px 0 0;
 }
 
 .badge {

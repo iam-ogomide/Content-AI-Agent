@@ -18,9 +18,9 @@ from dotenv import load_dotenv
 from google import genai
 from google.genai import types
 
-from generator import generate_draft
+from generator import generate_draft, generate_draft_stream
 from planner import ICPS, PILLARS, generate_plan
-from repurposer import repurpose_content
+from repurposer import repurpose_content, repurpose_content_stream
 from reviewer import review_draft
 
 load_dotenv()
@@ -55,6 +55,7 @@ def _get_client():
 AGENTS = {
     "generate": {
         "fn": generate_draft,
+        "stream_fn": generate_draft_stream,
         "label": "Generator",
         "required": ["topic", "channel", "tone"],
         "optional": [
@@ -79,6 +80,7 @@ AGENTS = {
     },
     "repurpose": {
         "fn": repurpose_content,
+        "stream_fn": repurpose_content_stream,
         "label": "Repurposer",
         "required": ["source_content", "target_format"],
         "optional": ["tone_shift", "word_limit"],
@@ -366,8 +368,28 @@ def _revision_note_from(report):
     return " ".join(p for p in parts if p)
 
 
-def _auto_revise(generate_spec, review_spec, gen_params, channel, brief=None):
-    """Generate, review, and revise until the draft passes or attempts run out.
+def _stream_text_agent(field, stream_fn, params, channel=None):
+    """Run a streaming Generator/Repurposer call, yielding one event per chunk
+    as Gemini streams it back, and returning the full text once done.
+
+    Callers drive this with `yield from` so the events surface all the way up
+    to the HTTP response while the accumulated text comes back as this
+    generator's return value — the same shape as a plain function call.
+    """
+    chunks = []
+    yield {"type": "text_start", "field": field, "channel": channel}
+    for chunk in stream_fn(**params):
+        chunks.append(chunk)
+        yield {"type": "text_chunk", "field": field, "text": chunk}
+    text = "".join(chunks)
+    yield {"type": "text_done", "field": field, "text": text}
+    return text
+
+
+def _auto_revise_stream(generate_spec, review_spec, gen_params, channel, brief=None):
+    """Streaming counterpart to the generate -> review -> revise loop: each
+    Generator call streams its text live; the Reviewer still runs as one
+    blocking call per attempt, since a partial score isn't meaningful.
 
     This is the one genuinely agentic loop in the system: the Reviewer's verdict
     drives another Generator call with no user input. It is bounded on purpose.
@@ -376,8 +398,9 @@ def _auto_revise(generate_spec, review_spec, gen_params, channel, brief=None):
     can spend every attempt chasing a rule the brief exempted the piece from.
     """
     attempts = []
-    draft = generate_spec["fn"](**gen_params)
     review_kwargs = {"brief": brief} if brief else {}
+
+    draft = yield from _stream_text_agent("draft", generate_spec["stream_fn"], gen_params, channel)
 
     for _ in range(MAX_REVISE_ATTEMPTS):
         report = review_spec["fn"](draft=draft, channel=channel, **review_kwargs)
@@ -390,7 +413,8 @@ def _auto_revise(generate_spec, review_spec, gen_params, channel, brief=None):
         if not note:
             return draft, report, attempts
 
-        draft = generate_spec["fn"](**{**gen_params, "previous_draft": draft, "revision_note": note})
+        revise_params = {**gen_params, "previous_draft": draft, "revision_note": note}
+        draft = yield from _stream_text_agent("draft", generate_spec["stream_fn"], revise_params, channel)
 
     # Out of attempts: score the final revision so the caller reports the draft
     # it is actually returning, not the previous one's verdict.
@@ -399,8 +423,16 @@ def _auto_revise(generate_spec, review_spec, gen_params, channel, brief=None):
     return draft, report, attempts
 
 
-def handle_message(message, session_id="default"):
-    """Full turn: route, execute the plan, assemble one response."""
+def _handle_message_events(message, session_id="default"):
+    """Generator core for a full turn: route, execute the plan, assemble one
+    response — yielding streaming events for any Generator/Repurposer call
+    along the way, and a final {"type": "result", ...} event carrying exactly
+    what `handle_message` used to return outright.
+
+    `handle_message` drains this and returns just the result, so existing
+    callers see no difference; `handle_message_stream` is the same generator
+    exposed directly for a caller (the Flask route) that wants the events.
+    """
     if not message or not message.strip():
         raise ValueError("message is required")
 
@@ -462,7 +494,8 @@ def handle_message(message, session_id="default"):
     if unbuilt:
         result["reply"] = " ".join(NOT_BUILT[i] for i in unbuilt)
         session["history"].append({"role": "agent", "text": result["reply"]})
-        return result
+        yield {"type": "result", **result}
+        return
 
     runnable = [i for i in intents if i in AGENTS]
     if not runnable:
@@ -473,7 +506,8 @@ def handle_message(message, session_id="default"):
             "ask for a plan for a given period."
         )
         session["history"].append({"role": "agent", "text": result["reply"]})
-        return result
+        yield {"type": "result", **result}
+        return
 
     # Auto-revise replaces the normal sequential run: instead of generating once
     # and reporting the score, it loops until the Reviewer passes the draft.
@@ -486,12 +520,13 @@ def handle_message(message, session_id="default"):
             result["reply"] = " ".join(asked)
             result["needs"] = missing
             session["history"].append({"role": "agent", "text": result["reply"]})
-            return result
+            yield {"type": "result", **result}
+            return
 
         # A revision note from the user's own message applies to the first draft
         # only; after that the Reviewer's feedback drives each pass.
         intent_brief = {k: brief[k] for k in BRIEF_INTENT_KEYS if brief.get(k)}
-        draft, report, attempts = _auto_revise(
+        draft, report, attempts = yield from _auto_revise_stream(
             gen_spec, AGENTS["review"], gen_params, gen_params["channel"], intent_brief
         )
 
@@ -502,6 +537,7 @@ def handle_message(message, session_id="default"):
         result["ran"] = ["generate", "review"]
         result["attempts"] = attempts
         result["auto_revised"] = True
+        result["channel"] = gen_params["channel"]
 
         passed = report.get("verdict") == "pass"
         n = len(attempts)
@@ -517,7 +553,8 @@ def handle_message(message, session_id="default"):
                 f"after {tries}, so it needs a human look. {report.get('summary', '')}"
             )
         session["history"].append({"role": "agent", "text": result["reply"]})
-        return result
+        yield {"type": "result", **result}
+        return
 
     # Execute the plan, passing each step's output to the next.
     chain_output = None
@@ -532,9 +569,16 @@ def handle_message(message, session_id="default"):
             result["reply"] = " ".join(asked)
             result["needs"] = missing
             session["history"].append({"role": "agent", "text": result["reply"]})
-            return result
+            yield {"type": "result", **result}
+            return
 
-        output = spec["fn"](**params)
+        # Generator/Repurposer calls stream their text live; everything else
+        # (Reviewer, Planner) runs as one blocking call, same as before.
+        if spec.get("stream_fn"):
+            channel_for_card = params.get("channel") or FORMAT_TO_CHANNEL.get(params.get("target_format"))
+            output = yield from _stream_text_agent(spec["produces"], spec["stream_fn"], params, channel_for_card)
+        else:
+            output = spec["fn"](**params)
 
         result[spec["produces"]] = output
         result["ran"].append(intent)
@@ -569,6 +613,31 @@ def handle_message(message, session_id="default"):
             verdict = "Looks good" if output.get("verdict") == "pass" else "Needs work"
             replies.append(f"{verdict} — {output.get('overall_score')}/100. {output.get('summary', '')}")
 
+    # Lets the frontend offer a "Review" action on a draft/repurposed card
+    # without asking the user which channel it was written for.
+    if brief.get("channel"):
+        result["channel"] = brief["channel"]
+
     result["reply"] = " ".join(replies)
     session["history"].append({"role": "agent", "text": result["reply"]})
+    yield {"type": "result", **result}
+
+
+def handle_message_stream(message, session_id="default"):
+    """Same turn as `handle_message`, exposed as the raw event generator so a
+    caller (the Flask route) can forward text_start/text_chunk/text_done
+    events to the client as they happen."""
+    return _handle_message_events(message, session_id)
+
+
+def handle_message(message, session_id="default"):
+    """Full turn: route, execute the plan, assemble one response.
+
+    Drains the streaming core and returns just the final result — for callers
+    that don't care about live text, this behaves exactly as it always did.
+    """
+    result = None
+    for event in _handle_message_events(message, session_id):
+        if event.get("type") == "result":
+            result = {k: v for k, v in event.items() if k != "type"}
     return result

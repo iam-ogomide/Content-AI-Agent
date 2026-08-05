@@ -77,7 +77,41 @@ function makeCopyButton(getText) {
   return btn;
 }
 
-function renderTextCard(container, title, text) {
+function makeReviewButton(bubble, card, getText, channel) {
+  const btn = document.createElement("button");
+  btn.type = "button";
+  btn.className = "ghost-btn review-btn";
+  btn.textContent = "Review";
+  btn.addEventListener("click", async () => {
+    btn.disabled = true;
+    btn.textContent = "Reviewing…";
+    card.querySelector(".review-error")?.remove();
+
+    try {
+      const response = await fetch("/api/review", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ draft: getText(), channel }),
+      });
+      const data = await response.json();
+      if (!response.ok) throw new Error(data.error || "Review failed");
+
+      renderReport(bubble, data.report);
+      btn.remove();
+      scrollToBottom();
+    } catch (err) {
+      btn.disabled = false;
+      btn.textContent = "Review";
+      const msg = document.createElement("p");
+      msg.className = "review-error";
+      msg.textContent = err.message;
+      card.appendChild(msg);
+    }
+  });
+  return btn;
+}
+
+function renderTextCard(container, title, text, channel) {
   const card = document.createElement("div");
   card.className = "result-card";
 
@@ -86,7 +120,16 @@ function renderTextCard(container, title, text) {
   const h = document.createElement("h3");
   h.textContent = title;
   header.appendChild(h);
-  header.appendChild(makeCopyButton(() => text));
+
+  const actions = document.createElement("div");
+  actions.className = "result-card-actions";
+  actions.appendChild(makeCopyButton(() => text));
+  // Only channels the Reviewer actually knows how to score have this — see
+  // orchestrator's `result["channel"]`, set from the brief that produced the draft.
+  if (channel) {
+    actions.appendChild(makeReviewButton(container, card, () => text, channel));
+  }
+  header.appendChild(actions);
   card.appendChild(header);
 
   const pre = document.createElement("pre");
@@ -193,19 +236,22 @@ function renderCalendar(container, calendar) {
   container.appendChild(card);
 }
 
-function renderAgentResponse(bubble, data) {
+// Fields whose text arrived via streaming already have a card (with its own
+// Copy/Review buttons) built live by getOrCreateTextCard — this only fills in
+// whatever a turn produced that never streams: the reply line, review
+// reports, and calendars. `streamedFields` prevents a duplicate text card.
+function renderAgentResponse(bubble, data, streamedFields) {
   const reply = document.createElement("p");
   reply.className = "reply-text";
   reply.textContent = data.reply || "";
-  bubble.appendChild(reply);
+  bubble.insertBefore(reply, bubble.firstChild);
 
-  // Render whatever this turn actually produced, in the order the agents ran.
   const ran = data.ran || [];
   for (const intent of ran) {
-    if (intent === "generate" && data.draft) {
-      renderTextCard(bubble, "Draft", data.draft);
-    } else if (intent === "repurpose" && data.repurposed) {
-      renderTextCard(bubble, "Repurposed content", data.repurposed);
+    if (intent === "generate" && data.draft && !streamedFields.has("draft")) {
+      renderTextCard(bubble, "Draft", data.draft, data.channel);
+    } else if (intent === "repurpose" && data.repurposed && !streamedFields.has("repurposed")) {
+      renderTextCard(bubble, "Repurposed content", data.repurposed, data.channel);
     } else if (intent === "review" && data.report) {
       renderReport(bubble, data.report);
     } else if (intent === "plan" && data.calendar) {
@@ -214,6 +260,8 @@ function renderAgentResponse(bubble, data) {
   }
 }
 
+const TEXT_CARD_TITLES = { draft: "Draft", repurposed: "Repurposed content" };
+
 async function sendMessage(message) {
   appendUserMessage(message);
   chatInput.value = "";
@@ -221,6 +269,110 @@ async function sendMessage(message) {
   sendBtn.disabled = true;
 
   const typingEl = appendTypingIndicator();
+  let bubble = null;
+  const textCards = new Map(); // field -> { card, pre }
+
+  function ensureBubble() {
+    if (!bubble) {
+      typingEl.remove();
+      appendMessage("agent", (b) => {
+        bubble = b;
+      });
+    }
+    return bubble;
+  }
+
+  // A field can stream more than once per turn (a revision attempt inside
+  // the auto-revise loop) — reopening clears the card rather than duplicating it.
+  function openTextCard(field, channel) {
+    const b = ensureBubble();
+    let entry = textCards.get(field);
+    if (!entry) {
+      const card = document.createElement("div");
+      card.className = "result-card";
+
+      const header = document.createElement("div");
+      header.className = "result-card-header";
+      const h = document.createElement("h3");
+      h.textContent = TEXT_CARD_TITLES[field] || field;
+      header.appendChild(h);
+      card.appendChild(header);
+
+      const pre = document.createElement("pre");
+      pre.className = "streaming";
+      card.appendChild(pre);
+
+      b.appendChild(card);
+      entry = { card, header, pre, channel, queue: "", done: false, timer: null };
+      textCards.set(field, entry);
+    } else {
+      clearInterval(entry.timer);
+      entry.timer = null;
+      entry.queue = "";
+      entry.done = false;
+      entry.card.querySelector(".result-card-actions")?.remove();
+      entry.pre.textContent = "";
+      entry.pre.classList.add("streaming");
+      entry.channel = channel;
+    }
+    scrollToBottom();
+    return entry;
+  }
+
+  // Gemini's chunks land in bursts of 150-250 characters, which reads as
+  // rushing when dropped straight into the DOM. Queue them and reveal a
+  // steady trickle instead, decoupled from how the network delivers them.
+  // A flat rate — not one scaled to the backlog size — is what actually
+  // reads as calm: scaling to the backlog meant an ordinary LinkedIn post
+  // (a few hundred characters landing before the first tick) blew straight
+  // through the "calm" pace the moment it had any backlog at all. The
+  // catch-up only exists so blog-length drafts don't take a full minute,
+  // and only engages far past normal post length.
+  const DRIP_TICK_MS = 25;
+  const DRIP_BASE_CHARS = 2;
+  const DRIP_CATCHUP_THRESHOLD = 1500;
+  const DRIP_CATCHUP_CHARS = 5;
+
+  function startDrip(entry) {
+    if (entry.timer) return;
+    entry.timer = setInterval(() => {
+      if (!entry.queue) {
+        clearInterval(entry.timer);
+        entry.timer = null;
+        if (entry.done) finalizeTextCard(entry);
+        return;
+      }
+      const take = entry.queue.length > DRIP_CATCHUP_THRESHOLD ? DRIP_CATCHUP_CHARS : DRIP_BASE_CHARS;
+      entry.pre.textContent += entry.queue.slice(0, take);
+      entry.queue = entry.queue.slice(take);
+      scrollToBottom();
+    }, DRIP_TICK_MS);
+  }
+
+  function finalizeTextCard(entry) {
+    entry.pre.classList.remove("streaming");
+    const actions = document.createElement("div");
+    actions.className = "result-card-actions";
+    actions.appendChild(makeCopyButton(() => entry.pre.textContent));
+    if (entry.channel) {
+      actions.appendChild(makeReviewButton(bubble, entry.card, () => entry.pre.textContent, entry.channel));
+    }
+    entry.header.appendChild(actions);
+  }
+
+  function appendTextChunk(field, text) {
+    const entry = textCards.get(field);
+    if (!entry) return;
+    entry.queue += text;
+    startDrip(entry);
+  }
+
+  function finishTextCard(field) {
+    const entry = textCards.get(field);
+    if (!entry) return;
+    entry.done = true;
+    if (!entry.queue && !entry.timer) finalizeTextCard(entry);
+  }
 
   try {
     const response = await fetch("/api/chat", {
@@ -229,16 +381,60 @@ async function sendMessage(message) {
       body: JSON.stringify({ message, session_id: sessionId }),
     });
 
-    const data = await response.json();
-    typingEl.remove();
-
-    if (!response.ok) {
+    if (!response.ok || !response.body) {
+      const data = await response.json().catch(() => ({}));
       throw new Error(data.error || "Something went wrong");
     }
 
-    appendMessage("agent", (bubble) => renderAgentResponse(bubble, data));
+    const reader = response.body.getReader();
+    const decoder = new TextDecoder();
+    let buffer = "";
+    let finalData = null;
+    let streamError = null;
+
+    const handleLine = (line) => {
+      if (!line.trim()) return;
+      const event = JSON.parse(line);
+      if (event.type === "text_start") {
+        openTextCard(event.field, event.channel);
+      } else if (event.type === "text_chunk") {
+        appendTextChunk(event.field, event.text);
+      } else if (event.type === "text_done") {
+        finishTextCard(event.field);
+      } else if (event.type === "result") {
+        finalData = event;
+      } else if (event.type === "error") {
+        streamError = event.error;
+      }
+    };
+
+    while (true) {
+      const { done, value } = await reader.read();
+      if (done) break;
+      buffer += decoder.decode(value, { stream: true });
+      let idx;
+      while ((idx = buffer.indexOf("\n")) !== -1) {
+        handleLine(buffer.slice(0, idx));
+        buffer = buffer.slice(idx + 1);
+      }
+    }
+    if (buffer.trim()) handleLine(buffer);
+
+    if (finalData) {
+      renderAgentResponse(ensureBubble(), finalData, new Set(textCards.keys()));
+    } else if (streamError) {
+      throw new Error(streamError);
+    } else {
+      throw new Error("No response received");
+    }
   } catch (err) {
     typingEl.remove();
+    // A card left mid-stream by an interrupted turn would otherwise keep
+    // dripping queued text and blinking its cursor with no way to finish.
+    for (const entry of textCards.values()) {
+      clearInterval(entry.timer);
+      entry.pre.classList.remove("streaming");
+    }
     appendErrorMessage(err.message);
   } finally {
     sendBtn.disabled = false;
