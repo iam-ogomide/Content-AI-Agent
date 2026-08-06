@@ -7,13 +7,25 @@
   <link rel="stylesheet" href="style.css" />
 </head>
 <body>
-  <main class="page">
+  <div class="shell">
+    <aside id="sidebar" class="sidebar">
+      <div class="sidebar-head">
+        <button type="button" id="new-chat-btn" class="primary-btn new-chat-btn">
+          + New conversation
+        </button>
+      </div>
+      <nav id="session-list" class="session-list" aria-label="Past conversations"></nav>
+    </aside>
+
+    <main class="page">
     <header class="chat-header">
+      <button type="button" id="sidebar-toggle" class="ghost-btn sidebar-toggle"
+              aria-label="Toggle conversations">☰</button>
       <div>
         <h1>Content AI Agent</h1>
         <p class="subtitle">Tell it what you need — draft, review, repurpose, or plan.</p>
       </div>
-      <button type="button" id="reset-btn" class="ghost-btn">New conversation</button>
+      <button type="button" id="reset-btn" class="ghost-btn">Delete this chat</button>
     </header>
 
     <section id="chat-log" class="chat-log" aria-live="polite"></section>
@@ -27,7 +39,8 @@
       ></textarea>
       <button type="submit" id="send-btn" class="primary-btn">Send</button>
     </form>
-  </main>
+    </main>
+  </div>
 
   <script src="script.js"></script>
 </body>

@@ -7,7 +7,7 @@ from generator import generate_draft
 from planner import generate_plan
 from repurposer import repurpose_content
 
-from orchestrator import handle_message_stream, reset_session
+from orchestrator import get_history, handle_message_stream, list_sessions, reset_session
 from reviewer import review_draft
 
 FRONTEND_DIR = Path(__file__).resolve().parent.parent / "frontend"
@@ -151,8 +151,34 @@ def chat():
     return Response(stream_with_context(event_stream()), mimetype="application/x-ndjson")
 
 
+@app.route("/api/chat/history", methods=["GET"])
+def chat_history():
+    """Past turns for a session, so a page reload can redraw the conversation.
+
+    An unknown session id is not an error — it returns an empty list, which is
+    what a genuinely new conversation looks like.
+    """
+    session_id = (request.args.get("session_id") or "default").strip() or "default"
+    return jsonify({"history": get_history(session_id)})
+
+
+@app.route("/api/chat/sessions", methods=["GET"])
+def chat_sessions():
+    """Sidebar listing: one metadata entry per stored conversation, newest first.
+
+    Metadata only — the history for whichever one the user clicks is fetched
+    separately, so opening the app doesn't ship every draft ever written.
+    """
+    return jsonify({"sessions": list_sessions()})
+
+
 @app.route("/api/chat/reset", methods=["POST"])
 def chat_reset():
+    """Delete a conversation outright.
+
+    Note this is a delete, not a "start a new one" — starting a new conversation
+    needs no server call at all, since the frontend just mints a new session id.
+    """
     data = request.get_json(silent=True) or {}
     session_id = (data.get("session_id") or "default").strip() or "default"
     reset_session(session_id)

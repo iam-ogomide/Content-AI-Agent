@@ -3,6 +3,10 @@ const chatForm = document.getElementById("chat-form");
 const chatInput = document.getElementById("chat-input");
 const sendBtn = document.getElementById("send-btn");
 const resetBtn = document.getElementById("reset-btn");
+const sidebar = document.getElementById("sidebar");
+const sidebarToggle = document.getElementById("sidebar-toggle");
+const sessionListEl = document.getElementById("session-list");
+const newChatBtn = document.getElementById("new-chat-btn");
 
 const CATEGORY_LABELS = {
   tone: "Tone",
@@ -12,19 +16,31 @@ const CATEGORY_LABELS = {
   seo_basics: "SEO basics",
 };
 
-// Persists across a page reload (same tab) so the conversation survives a
-// refresh, but a new tab gets a fresh session. The Orchestrator's own memory
-// is in-process and keyed by this id.
-function getSessionId() {
-  let id = sessionStorage.getItem("session_id");
+// localStorage, not sessionStorage: which conversation you were last in should
+// outlive the tab, the same way the sidebar's list does. The server keys its
+// memory by this id and mirrors it to disk, so a conversation survives a restart.
+// Mutable — switching conversations in the sidebar reassigns it.
+let sessionId = loadActiveSessionId();
+
+function newSessionId() {
+  return crypto.randomUUID
+    ? crypto.randomUUID()
+    : `sess-${Date.now()}-${Math.random().toString(16).slice(2)}`;
+}
+
+function loadActiveSessionId() {
+  let id = localStorage.getItem("session_id");
   if (!id) {
-    id = crypto.randomUUID ? crypto.randomUUID() : `sess-${Date.now()}-${Math.random().toString(16).slice(2)}`;
-    sessionStorage.setItem("session_id", id);
+    id = newSessionId();
+    localStorage.setItem("session_id", id);
   }
   return id;
 }
 
-const sessionId = getSessionId();
+function setActiveSessionId(id) {
+  sessionId = id;
+  localStorage.setItem("session_id", id);
+}
 
 function scrollToBottom() {
   chatLog.scrollTop = chatLog.scrollHeight;
@@ -439,6 +455,9 @@ async function sendMessage(message) {
   } finally {
     sendBtn.disabled = false;
     chatInput.focus();
+    // A brand-new conversation only reaches the sidebar once it has a turn, and
+    // its title comes from the message just sent — so refresh after, not before.
+    refreshSessionList();
   }
 }
 
@@ -461,21 +480,166 @@ chatInput.addEventListener("input", () => {
   chatInput.style.height = `${Math.min(chatInput.scrollHeight, 200)}px`;
 });
 
-resetBtn.addEventListener("click", async () => {
+// --------------------------------------------------------------------------
+// Conversations
+// --------------------------------------------------------------------------
+
+function appendGreeting() {
+  appendMessage("agent", (bubble) => {
+    bubble.textContent =
+      "Hi — I can write a draft, review one, repurpose content into another format, or build a content calendar. What do you need?";
+  });
+}
+
+// Absolute dates are noise in a list you scan; how long ago is what you're
+// actually looking for.
+function relativeTime(iso) {
+  if (!iso) return "";
+  const then = new Date(iso).getTime();
+  if (Number.isNaN(then)) return "";
+  const mins = Math.round((Date.now() - then) / 60000);
+  if (mins < 1) return "now";
+  if (mins < 60) return `${mins}m`;
+  if (mins < 1440) return `${Math.round(mins / 60)}h`;
+  return `${Math.round(mins / 1440)}d`;
+}
+
+function renderSessionList(sessions) {
+  sessionListEl.innerHTML = "";
+
+  if (!sessions.length) {
+    const empty = document.createElement("p");
+    empty.className = "session-empty";
+    empty.textContent = "No past conversations yet. Send a message and it'll show up here.";
+    sessionListEl.appendChild(empty);
+    return;
+  }
+
+  for (const s of sessions) {
+    const item = document.createElement("div");
+    item.className = `session-item${s.session_id === sessionId ? " active" : ""}`;
+
+    const title = document.createElement("span");
+    title.className = "session-title";
+    title.textContent = s.title;
+    title.title = s.title; // full text on hover, since the row clips it
+
+    const meta = document.createElement("span");
+    meta.className = "session-meta";
+    meta.textContent = relativeTime(s.updated);
+
+    const del = document.createElement("button");
+    del.type = "button";
+    del.className = "session-delete";
+    del.textContent = "×";
+    del.title = "Delete conversation";
+    del.addEventListener("click", (event) => {
+      // Without this the row's own click handler also fires and opens the
+      // conversation we are deleting.
+      event.stopPropagation();
+      deleteConversation(s.session_id);
+    });
+
+    item.addEventListener("click", () => openConversation(s.session_id));
+    item.append(title, meta, del);
+    sessionListEl.appendChild(item);
+  }
+}
+
+async function refreshSessionList() {
+  try {
+    const res = await fetch("/api/chat/sessions");
+    if (!res.ok) return;
+    const { sessions } = await res.json();
+    renderSessionList(sessions || []);
+  } catch {
+    // Backend down — leave whatever is on screen rather than blanking the list.
+  }
+}
+
+async function fetchHistory(id) {
+  try {
+    const res = await fetch(`/api/chat/history?session_id=${encodeURIComponent(id)}`);
+    if (!res.ok) return [];
+    const { history } = await res.json();
+    return history || [];
+  } catch {
+    return [];
+  }
+}
+
+// Draws a stored conversation into the empty log. An empty streamedFields set is
+// the point: it tells renderAgentResponse nothing arrived live, so it renders
+// every stored artifact — draft cards, score tables, calendars.
+function renderHistory(history) {
+  for (const turn of history) {
+    if (turn.role === "user") {
+      appendUserMessage(turn.text);
+    } else {
+      appendMessage("agent", (bubble) => renderAgentResponse(bubble, turn, new Set()));
+    }
+  }
+  scrollToBottom();
+}
+
+async function openConversation(id) {
+  setActiveSessionId(id);
+  chatLog.innerHTML = "";
+  const history = await fetchHistory(id);
+  if (history.length) {
+    renderHistory(history);
+  } else {
+    appendGreeting();
+  }
+  refreshSessionList(); // moves the active highlight
+  if (window.matchMedia("(max-width: 720px)").matches) {
+    sidebar.classList.add("collapsed"); // overlay would cover the conversation
+  }
+}
+
+// No server call: a new conversation is just an id the server hasn't seen yet.
+// It appears in the sidebar once it has a turn in it, which is also why the
+// list can't fill up with empty conversations from repeated clicking.
+function startNewConversation() {
+  setActiveSessionId(newSessionId());
+  chatLog.innerHTML = "";
+  appendGreeting();
+  refreshSessionList();
+  chatInput.focus();
+}
+
+async function deleteConversation(id) {
   await fetch("/api/chat/reset", {
     method: "POST",
     headers: { "Content-Type": "application/json" },
-    body: JSON.stringify({ session_id: sessionId }),
+    body: JSON.stringify({ session_id: id }),
   });
-  chatLog.innerHTML = "";
-  appendMessage("agent", (bubble) => {
-    bubble.textContent =
-      "New conversation started. Ask me to write a draft, review one, repurpose content, or build a content calendar.";
-  });
+
+  // Deleting the conversation you're looking at has to leave you somewhere, so
+  // it lands you in a fresh one; deleting any other only updates the list.
+  if (id === sessionId) {
+    startNewConversation();
+  } else {
+    refreshSessionList();
+  }
+}
+
+newChatBtn.addEventListener("click", startNewConversation);
+
+resetBtn.addEventListener("click", () => deleteConversation(sessionId));
+
+sidebarToggle.addEventListener("click", () => {
+  sidebar.classList.toggle("collapsed");
 });
 
-// Greeting on first load.
-appendMessage("agent", (bubble) => {
-  bubble.textContent =
-    "Hi — I can write a draft, review one, repurpose content into another format, or build a content calendar. What do you need?";
-});
+// First load: redraw whichever conversation was last active, since the id
+// outlives the DOM and the agent still remembers the drafts in it.
+(async function init() {
+  const history = await fetchHistory(sessionId);
+  if (history.length) {
+    renderHistory(history);
+  } else {
+    appendGreeting();
+  }
+  refreshSessionList();
+})();

@@ -13,6 +13,8 @@ Planner later is a registry entry rather than a rewrite of the routing logic.
 
 import json
 import os
+from datetime import datetime, timezone
+from pathlib import Path
 
 from dotenv import load_dotenv
 from google import genai
@@ -236,23 +238,151 @@ USER MESSAGE:
 # --------------------------------------------------------------------------
 # Session memory
 # --------------------------------------------------------------------------
-# Conversation memory only — the last few turns plus the running brief, so
-# follow-ups resolve. This is deliberately in-process: it is correct for a
-# single-process dev server and dies on restart. The vector-DB knowledge layer
-# in section 5 of the brief is a separate concern (phase 4).
+# Conversation memory only — turns plus the running brief, so follow-ups
+# resolve. The vector-DB knowledge layer in section 5 of the brief is a
+# separate concern (phase 4).
+#
+# Sessions live in a dict and are mirrored to a JSON file, because a sidebar
+# listing past conversations is worthless if the list empties every time a
+# backend file is saved (Flask's debug reloader) or the server restarts. The
+# file is a development store, not the production answer: it does not survive a
+# container rebuild and two gunicorn workers would clobber each other's writes.
+# Every read and write goes through the accessors below, so swapping in Redis or
+# Postgres at deploy time is confined to this section.
 
 SESSIONS = {}
 MAX_HISTORY = 6
 
+STORE_PATH = Path(__file__).resolve().parent / "sessions.json"
+
+# What the frontend needs to redraw a past turn. `text` is always present and is
+# all the router reads (see _history_block); these are extra keys alongside it,
+# so widening this list stays invisible to routing.
+ARTIFACT_KEYS = ("ran", "draft", "repurposed", "report", "calendar", "channel")
+
+# How many characters of the opening message become a conversation's title.
+TITLE_LENGTH = 60
+
+
+def _new_session():
+    # `created` orders the sidebar; `updated` is what actually sorts it, so a
+    # revived old conversation rises back to the top.
+    stamp = datetime.now(timezone.utc).isoformat()
+    return {"history": [], "brief": {}, "last_draft": None,
+            "title": "", "created": stamp, "updated": stamp}
+
+
+def _load_store():
+    """Read sessions off disk once per process, into SESSIONS.
+
+    A corrupt or half-written file is treated as no file: losing dev
+    conversation history is a far better outcome than refusing to start.
+    """
+    if not STORE_PATH.exists():
+        return
+    try:
+        data = json.loads(STORE_PATH.read_text(encoding="utf-8"))
+    except (json.JSONDecodeError, OSError):
+        return
+    if isinstance(data, dict):
+        for sid, session in data.items():
+            if isinstance(session, dict) and "history" in session:
+                SESSIONS[sid] = {**_new_session(), **session}
+
+
+def _save_store():
+    """Mirror SESSIONS to disk. Best-effort: a failed write must never break a
+    turn that already cost a Gemini call, so the error is swallowed.
+
+    Writes to a temp file and replaces, so a crash mid-write cannot leave the
+    store truncated — os.replace is atomic on the same filesystem.
+    """
+    try:
+        tmp = STORE_PATH.with_suffix(".json.tmp")
+        tmp.write_text(json.dumps(SESSIONS, ensure_ascii=False), encoding="utf-8")
+        os.replace(tmp, STORE_PATH)
+    except OSError:
+        pass
+
 
 def _get_session(session_id):
     if session_id not in SESSIONS:
-        SESSIONS[session_id] = {"history": [], "brief": {}, "last_draft": None}
+        SESSIONS[session_id] = _new_session()
     return SESSIONS[session_id]
 
 
 def reset_session(session_id):
     SESSIONS.pop(session_id, None)
+    _save_store()
+
+
+def get_history(session_id):
+    """The full stored history for a session, oldest turn first.
+
+    Deliberately not truncated to MAX_HISTORY: that bounds how much context the
+    router is given, not how far back a user may scroll.
+    """
+    session = SESSIONS.get(session_id)
+    return session["history"] if session else []
+
+
+def list_sessions():
+    """Every stored conversation as a sidebar entry, most recently used first.
+
+    Returns metadata only — no history, no drafts. The sidebar renders dozens of
+    these, and shipping every draft with them would send the whole store on
+    every page load.
+    """
+    entries = [
+        {
+            "session_id": sid,
+            "title": session.get("title") or "New conversation",
+            "created": session.get("created", ""),
+            "updated": session.get("updated", ""),
+            "turns": len(session.get("history", [])),
+        }
+        for sid, session in SESSIONS.items()
+        if session.get("history")  # a session that was opened but never used
+    ]
+    entries.sort(key=lambda e: e["updated"], reverse=True)
+    return entries
+
+
+def _touch_session(session, message):
+    """Stamp a session as just-used, titling it from its first message.
+
+    The title comes from the opening message only — later messages are usually
+    follow-ups ("make it shorter"), which describe the conversation far worse
+    than what started it.
+    """
+    session["updated"] = datetime.now(timezone.utc).isoformat()
+    if not session.get("title") and message:
+        title = " ".join(message.split())
+        session["title"] = (
+            title if len(title) <= TITLE_LENGTH else title[:TITLE_LENGTH].rstrip() + "…"
+        )
+
+
+_load_store()
+
+
+def _record_agent_turn(session, result):
+    """Store an agent turn as the same object shape the frontend renders live,
+    so replaying history needs no separate rendering path.
+
+    The reply line alone is not enough to redraw a turn — it says "Looks good —
+    90/100" without the draft or the score breakdown — so the artifacts a turn
+    produced are stored beside it.
+    """
+    turn = {"role": "agent", "text": result.get("reply", "")}
+    for key in ARTIFACT_KEYS:
+        if result.get(key):
+            turn[key] = result[key]
+    session["history"].append(turn)
+
+    # The turn is complete here — every exit path records an agent turn — so
+    # this is the one place that has to persist.
+    _save_store()
 
 
 def _history_block(session):
@@ -481,6 +611,7 @@ def _handle_message_events(message, session_id="default"):
         brief.pop("revision_note", None)
 
     session["history"].append({"role": "user", "text": message})
+    _touch_session(session, message)
 
     result = {
         "reply": "",
@@ -493,7 +624,7 @@ def _handle_message_events(message, session_id="default"):
     unbuilt = [i for i in intents if i in NOT_BUILT]
     if unbuilt:
         result["reply"] = " ".join(NOT_BUILT[i] for i in unbuilt)
-        session["history"].append({"role": "agent", "text": result["reply"]})
+        _record_agent_turn(session, result)
         yield {"type": "result", **result}
         return
 
@@ -505,7 +636,7 @@ def _handle_message_events(message, session_id="default"):
             "paste a draft you want scored, say what to turn existing content into, or "
             "ask for a plan for a given period."
         )
-        session["history"].append({"role": "agent", "text": result["reply"]})
+        _record_agent_turn(session, result)
         yield {"type": "result", **result}
         return
 
@@ -519,7 +650,7 @@ def _handle_message_events(message, session_id="default"):
             asked = [QUESTIONS.get(m, f"I need a value for {m}.") for m in missing]
             result["reply"] = " ".join(asked)
             result["needs"] = missing
-            session["history"].append({"role": "agent", "text": result["reply"]})
+            _record_agent_turn(session, result)
             yield {"type": "result", **result}
             return
 
@@ -552,7 +683,7 @@ def _handle_message_events(message, session_id="default"):
                 f"Here's a {gen_params['channel']} draft. Still {report.get('overall_score')}/100 "
                 f"after {tries}, so it needs a human look. {report.get('summary', '')}"
             )
-        session["history"].append({"role": "agent", "text": result["reply"]})
+        _record_agent_turn(session, result)
         yield {"type": "result", **result}
         return
 
@@ -568,7 +699,7 @@ def _handle_message_events(message, session_id="default"):
             asked = [QUESTIONS.get(m, f"I need a value for {m}.") for m in missing]
             result["reply"] = " ".join(asked)
             result["needs"] = missing
-            session["history"].append({"role": "agent", "text": result["reply"]})
+            _record_agent_turn(session, result)
             yield {"type": "result", **result}
             return
 
@@ -619,7 +750,7 @@ def _handle_message_events(message, session_id="default"):
         result["channel"] = brief["channel"]
 
     result["reply"] = " ".join(replies)
-    session["history"].append({"role": "agent", "text": result["reply"]})
+    _record_agent_turn(session, result)
     yield {"type": "result", **result}
 
 
