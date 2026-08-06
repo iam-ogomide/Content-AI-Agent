@@ -155,14 +155,14 @@ function renderTextCard(container, title, text, channel) {
   container.appendChild(card);
 }
 
-function renderReport(container, report) {
+function renderReport(container, report, channelLabel) {
   const card = document.createElement("div");
   card.className = "result-card";
 
   const header = document.createElement("div");
   header.className = "result-card-header";
   const h = document.createElement("h3");
-  h.textContent = "Feedback report";
+  h.textContent = channelLabel ? `Feedback report — ${channelLabel}` : "Feedback report";
   header.appendChild(h);
   const badge = document.createElement("span");
   badge.className = `badge ${report.verdict}`;
@@ -198,6 +198,47 @@ function renderReport(container, report) {
   container.appendChild(card);
 }
 
+function makeDownloadButton(getCalendar) {
+  const btn = document.createElement("button");
+  btn.type = "button";
+  btn.className = "ghost-btn download-btn";
+  btn.textContent = "Download";
+  btn.addEventListener("click", async () => {
+    btn.disabled = true;
+    btn.textContent = "Preparing…";
+    try {
+      const response = await fetch("/api/plan/export", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ calendar: getCalendar() }),
+      });
+      if (!response.ok) {
+        const data = await response.json().catch(() => ({}));
+        throw new Error(data.error || "Export failed");
+      }
+      const blob = await response.blob();
+      const disposition = response.headers.get("Content-Disposition") || "";
+      const match = disposition.match(/filename="?([^"]+)"?/);
+      const filename = match ? match[1] : "content-calendar.xlsx";
+
+      const url = URL.createObjectURL(blob);
+      const a = document.createElement("a");
+      a.href = url;
+      a.download = filename;
+      document.body.appendChild(a);
+      a.click();
+      a.remove();
+      URL.revokeObjectURL(url);
+    } catch (err) {
+      alert(err.message);
+    } finally {
+      btn.disabled = false;
+      btn.textContent = "Download";
+    }
+  });
+  return btn;
+}
+
 function renderCalendar(container, calendar) {
   const card = document.createElement("div");
   card.className = "result-card";
@@ -207,6 +248,11 @@ function renderCalendar(container, calendar) {
   const h = document.createElement("h3");
   h.textContent = `Content calendar — ${calendar.timeframe || ""}`;
   header.appendChild(h);
+
+  const actions = document.createElement("div");
+  actions.className = "result-card-actions";
+  actions.appendChild(makeDownloadButton(() => calendar));
+  header.appendChild(actions);
   card.appendChild(header);
 
   const slots = calendar.slots || [];
@@ -274,6 +320,13 @@ function renderAgentResponse(bubble, data, streamedFields) {
       renderCalendar(bubble, data.calendar);
     }
   }
+
+  // Multi-channel generate ("a LinkedIn post and an Instagram caption about X")
+  // already streamed each draft to its own card (fields like "draft:LinkedIn"),
+  // so only the per-channel review reports — not in `ran` above — need adding.
+  for (const { channel, report } of data.reports || []) {
+    renderReport(bubble, report, channel);
+  }
 }
 
 const TEXT_CARD_TITLES = { draft: "Draft", repurposed: "Repurposed content" };
@@ -300,7 +353,9 @@ async function sendMessage(message) {
 
   // A field can stream more than once per turn (a revision attempt inside
   // the auto-revise loop) — reopening clears the card rather than duplicating it.
-  function openTextCard(field, channel) {
+  // `label` overrides the default title — set when several drafts stream in
+  // the same turn (multi-channel generate) and need to read as distinct cards.
+  function openTextCard(field, channel, label) {
     const b = ensureBubble();
     let entry = textCards.get(field);
     if (!entry) {
@@ -310,7 +365,7 @@ async function sendMessage(message) {
       const header = document.createElement("div");
       header.className = "result-card-header";
       const h = document.createElement("h3");
-      h.textContent = TEXT_CARD_TITLES[field] || field;
+      h.textContent = label || TEXT_CARD_TITLES[field] || field;
       header.appendChild(h);
       card.appendChild(header);
 
@@ -412,7 +467,7 @@ async function sendMessage(message) {
       if (!line.trim()) return;
       const event = JSON.parse(line);
       if (event.type === "text_start") {
-        openTextCard(event.field, event.channel);
+        openTextCard(event.field, event.channel, event.label);
       } else if (event.type === "text_chunk") {
         appendTextChunk(event.field, event.text);
       } else if (event.type === "text_done") {

@@ -4,6 +4,8 @@ from pathlib import Path
 from dotenv import load_dotenv
 from google import genai
 
+from product_context import load_product_context
+
 load_dotenv()
 
 BRAND_VOICE_PATH = Path(__file__).resolve().parent.parent / "brand_voice.md"
@@ -40,6 +42,27 @@ def _load_brand_voice():
 def build_prompt(topic, channel, tone, audience=None, cta=None, keyword=None, word_limit=None,
                  previous_draft=None, revision_note=None):
     brand_voice = _load_brand_voice()
+
+    # brand_voice.md gives tone and a short product summary; product.pdf is the
+    # internal handover doc with the depth behind it (what's actually live,
+    # shipping, or still planned, per-product specifics brand_voice.md never
+    # gets into). Optional: an empty string here just means the doc wasn't
+    # found, and the prompt below drops the block instead of failing.
+    product_context = load_product_context()
+    product_block = ""
+    if product_context:
+        product_block = f"""
+--- PRODUCT CONTEXT (internal handover doc) ---
+{product_context}
+--- END PRODUCT CONTEXT ---
+
+This doc is for factual grounding only — get product names, capabilities, and status (live /
+shipping / planned / in development) right, and never present a planned or in-development
+item as available now. It contains internal details (contacts, emails, roadmap risk notes)
+that must never appear in the output, and must never be quoted from directly or mentioned as
+a source. If it conflicts with the brand voice doc on a product's current status, this doc is
+more current — the brand voice doc still governs tone and what to claim publicly.
+"""
 
     brief_lines = [
         f"Topic: {topic}",
@@ -85,7 +108,7 @@ rewrite from scratch, and do not add new claims or sections that were not asked 
 --- BRAND VOICE DOC ---
 {brand_voice}
 --- END BRAND VOICE DOC ---
-
+{product_block}
 CONTENT BRIEF:
 {brief}
 {revision_block}

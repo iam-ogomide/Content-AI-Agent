@@ -180,6 +180,12 @@ EXTRACTION RULES:
 - channel must be exactly one of: {channels}. Map what the user says onto these
   ("twitter"/"tweet" -> "X (Twitter)", "IG"/"insta" -> "Instagram", "newsletter" -> "Email").
   If no channel is stated or implied, omit the field entirely.
+- If a generate request names MORE THAN ONE channel in the same message ("a LinkedIn post
+  and an Instagram caption about X", "write this for LinkedIn and X too"), put every channel
+  in `channels` as a list and omit `channel` entirely. Each one gets its own draft, all built
+  from the same topic/tone/audience/cta/keyword stated in this message. Use `channel`
+  (singular) whenever exactly one channel applies — including a follow-up that adds just one
+  more ("now do Instagram too"), which stays a single `channel`, not a one-item `channels` list.
 - tone: only if the user describes one. Do not invent a tone.
 - word_limit: an integer, only if the user states a length ("under 200 words" -> 200).
   For character limits on X, leave word_limit unset; the channel handles that.
@@ -498,16 +504,20 @@ def _revision_note_from(report):
     return " ".join(p for p in parts if p)
 
 
-def _stream_text_agent(field, stream_fn, params, channel=None):
+def _stream_text_agent(field, stream_fn, params, channel=None, label=None):
     """Run a streaming Generator/Repurposer call, yielding one event per chunk
     as Gemini streams it back, and returning the full text once done.
 
     Callers drive this with `yield from` so the events surface all the way up
     to the HTTP response while the accumulated text comes back as this
     generator's return value — the same shape as a plain function call.
+
+    `label` overrides the frontend's default card title (just "Draft") — used
+    when several drafts stream in the same turn and need to read as distinct
+    cards, e.g. "Draft — LinkedIn" next to "Draft — Instagram".
     """
     chunks = []
-    yield {"type": "text_start", "field": field, "channel": channel}
+    yield {"type": "text_start", "field": field, "channel": channel, "label": label}
     for chunk in stream_fn(**params):
         chunks.append(chunk)
         yield {"type": "text_chunk", "field": field, "text": chunk}
@@ -516,7 +526,7 @@ def _stream_text_agent(field, stream_fn, params, channel=None):
     return text
 
 
-def _auto_revise_stream(generate_spec, review_spec, gen_params, channel, brief=None):
+def _auto_revise_stream(generate_spec, review_spec, gen_params, channel, brief=None, field="draft", label=None):
     """Streaming counterpart to the generate -> review -> revise loop: each
     Generator call streams its text live; the Reviewer still runs as one
     blocking call per attempt, since a partial score isn't meaningful.
@@ -526,11 +536,14 @@ def _auto_revise_stream(generate_spec, review_spec, gen_params, channel, brief=N
 
     The brief goes to the Reviewer as well as the Generator. Without it the loop
     can spend every attempt chasing a rule the brief exempted the piece from.
+
+    `field`/`label` are only overridden by the multi-channel caller, which runs
+    this loop once per channel and needs each one to land on its own card.
     """
     attempts = []
     review_kwargs = {"brief": brief} if brief else {}
 
-    draft = yield from _stream_text_agent("draft", generate_spec["stream_fn"], gen_params, channel)
+    draft = yield from _stream_text_agent(field, generate_spec["stream_fn"], gen_params, channel, label)
 
     for _ in range(MAX_REVISE_ATTEMPTS):
         report = review_spec["fn"](draft=draft, channel=channel, **review_kwargs)
@@ -544,13 +557,94 @@ def _auto_revise_stream(generate_spec, review_spec, gen_params, channel, brief=N
             return draft, report, attempts
 
         revise_params = {**gen_params, "previous_draft": draft, "revision_note": note}
-        draft = yield from _stream_text_agent("draft", generate_spec["stream_fn"], revise_params, channel)
+        draft = yield from _stream_text_agent(field, generate_spec["stream_fn"], revise_params, channel, label)
 
     # Out of attempts: score the final revision so the caller reports the draft
     # it is actually returning, not the previous one's verdict.
     report = review_spec["fn"](draft=draft, channel=channel, **review_kwargs)
     attempts.append({"score": report.get("overall_score"), "verdict": report.get("verdict")})
     return draft, report, attempts
+
+
+# Multi-channel generate is handled as its own branch rather than folded into
+# the generic chain loop below: a calendar's `channels` list describes one
+# plan spanning several channels, but a generate request naming several
+# channels means N unrelated pieces, each needing its own stream, its own
+# review (if asked for), and its own card. repurpose/plan don't have a
+# multi-channel shape, so this only ever fires for generate (+ review).
+MULTI_CHANNEL_INTENTS = {"generate", "review"}
+
+
+def _run_multi_channel_stream(channels, do_review, auto_revise, brief, session, result):
+    """Run generate (and optionally review/auto-revise) once per channel named
+    in a single message, streaming each draft to its own card.
+
+    Mirrors the single-channel branches below, just looped — kept separate
+    from them because threading a channel list through the generic chain loop
+    (which assumes one `chain_output` per step) would make that loop harder to
+    follow for the common single-channel case it mostly serves.
+    """
+    gen_spec = AGENTS["generate"]
+    review_spec = AGENTS["review"]
+
+    # topic/tone are shared across every channel in this request, so one probe
+    # (using the first channel just to satisfy the schema) is enough to catch
+    # what's missing rather than repeating the same question per channel.
+    _, missing = _resolve_params("generate", gen_spec, {**brief, "channel": channels[0]}, None)
+    if missing:
+        asked = [QUESTIONS.get(m, f"I need a value for {m}.") for m in missing]
+        result["reply"] = " ".join(asked)
+        result["needs"] = missing
+        session["history"].append({"role": "agent", "text": result["reply"]})
+        yield {"type": "result", **result}
+        return
+
+    intent_brief = {k: brief[k] for k in BRIEF_INTENT_KEYS if brief.get(k)}
+    intent_brief.pop("channel", None)
+
+    drafts = []
+    reports = []
+    reply_parts = []
+
+    for channel in channels:
+        gen_params, _ = _resolve_params("generate", gen_spec, {**brief, "channel": channel}, None)
+        field = f"draft:{channel}"
+        label = f"Draft — {channel}"
+        channel_brief = {**intent_brief, "channel": channel} if do_review else None
+
+        if auto_revise and do_review:
+            draft, report, attempts = yield from _auto_revise_stream(
+                gen_spec, review_spec, gen_params, channel, channel_brief, field=field, label=label
+            )
+            reports.append({"channel": channel, "report": report, "attempts": attempts})
+        elif do_review:
+            draft = yield from _stream_text_agent(field, gen_spec["stream_fn"], gen_params, channel, label)
+            report = review_spec["fn"](draft=draft, channel=channel, brief=channel_brief)
+            reports.append({"channel": channel, "report": report})
+        else:
+            draft = yield from _stream_text_agent(field, gen_spec["stream_fn"], gen_params, channel, label)
+
+        drafts.append({"channel": channel, "draft": draft})
+
+        if do_review:
+            report = reports[-1]["report"]
+            verdict = "Looks good" if report.get("verdict") == "pass" else "Needs work"
+            reply_parts.append(f"{channel}: {verdict} — {report.get('overall_score')}/100.")
+        else:
+            reply_parts.append(f"{channel}: draft ready.")
+
+    session["last_draft"] = drafts[-1]["draft"]
+    brief["draft"] = drafts[-1]["draft"]
+
+    result["drafts"] = drafts
+    result["ran"] = ["generate", "review"] if do_review else ["generate"]
+    if do_review:
+        result["reports"] = reports
+    if auto_revise:
+        result["auto_revised"] = True
+    result["reply"] = " ".join(reply_parts)
+    session["history"].append({"role": "agent", "text": result["reply"]})
+    yield {"type": "result", **result}
 
 
 def _handle_message_events(message, session_id="default"):
@@ -638,6 +732,21 @@ def _handle_message_events(message, session_id="default"):
         )
         _record_agent_turn(session, result)
         yield {"type": "result", **result}
+        return
+
+    # A generate request naming several channels in one message ("a LinkedIn
+    # post and an Instagram caption about X") means N distinct pieces, not one
+    # chain — handled as its own branch, ahead of the single-channel paths below.
+    channels_field = brief.get("channels")
+    if (
+        isinstance(channels_field, list)
+        and len(channels_field) > 1
+        and "generate" in runnable
+        and set(runnable) <= MULTI_CHANNEL_INTENTS
+    ):
+        yield from _run_multi_channel_stream(
+            channels_field, "review" in runnable, auto_revise, brief, session, result
+        )
         return
 
     # Auto-revise replaces the normal sequential run: instead of generating once

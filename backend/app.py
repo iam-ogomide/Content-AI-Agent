@@ -1,8 +1,9 @@
 import json
 from pathlib import Path
 
-from flask import Flask, Response, jsonify, request, send_from_directory, stream_with_context
+from flask import Flask, Response, jsonify, request, send_file, send_from_directory, stream_with_context
 
+from exporter import calendar_filename, calendar_to_xlsx_bytes
 from generator import generate_draft
 from planner import generate_plan
 from repurposer import repurpose_content
@@ -91,6 +92,27 @@ def plan():
         return jsonify({"error": f"Planning failed: {e}"}), 502
 
     return jsonify({"calendar": calendar})
+
+
+@app.route("/api/plan/export", methods=["POST"])
+def export_plan():
+    data = request.get_json(silent=True) or {}
+    calendar = data.get("calendar")
+
+    if not isinstance(calendar, dict) or not calendar.get("slots"):
+        return jsonify({"error": "calendar with slots is required"}), 400
+
+    try:
+        buf = calendar_to_xlsx_bytes(calendar)
+    except Exception as e:
+        return jsonify({"error": f"Export failed: {e}"}), 500
+
+    return send_file(
+        buf,
+        as_attachment=True,
+        download_name=calendar_filename(calendar),
+        mimetype="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+    )
 
 
 @app.route("/api/review", methods=["POST"])

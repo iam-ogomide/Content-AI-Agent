@@ -19,6 +19,8 @@ from dotenv import load_dotenv
 from google import genai
 from google.genai import types
 
+from product_context import load_product_context
+
 load_dotenv()
 
 BRAND_VOICE_PATH = Path(__file__).resolve().parent.parent / "brand_voice.md"
@@ -97,6 +99,26 @@ def build_prompt(timeframe, channels, pillars=None, theme=None, icp=None,
                  posts_per_week=None, today=None):
     brand_voice = _load_brand_voice()
 
+    # brand_voice.md sections 1/4/9 (referenced in the rules below) only carry
+    # a short product summary; product.pdf is the internal handover doc behind
+    # it — real per-product status and specifics to draw topics from instead
+    # of inventing angles. Optional: an empty string just drops the block.
+    product_context = load_product_context()
+    product_block = ""
+    if product_context:
+        product_block = f"""
+--- PRODUCT CONTEXT (internal handover doc) ---
+{product_context}
+--- END PRODUCT CONTEXT ---
+
+Use this doc to ground topics and angles in what CreditChek actually ships, and to get
+product names, capabilities, and status (live / shipping / planned / in development) right.
+Never schedule a slot that presents a planned or in-development item as available now — if a
+slot leans on one, say so in its angle. This doc is for factual grounding only: it contains
+internal details (contacts, emails, roadmap risk notes) that must never appear in a slot's
+topic, angle, or notes, and must never be quoted from directly or mentioned as a source.
+"""
+
     # The model has no reliable sense of the current date, so "next 2 weeks"
     # would otherwise resolve to whenever its training data ended. Anchor it.
     today = today or date.today().isoformat()
@@ -124,7 +146,7 @@ that the Generator Agent will draft later.
 --- BRAND VOICE DOC ---
 {brand_voice}
 --- END BRAND VOICE DOC ---
-
+{product_block}
 TODAY'S DATE: {today}
 
 PLANNING BRIEF:
