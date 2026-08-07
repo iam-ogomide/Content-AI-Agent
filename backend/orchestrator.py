@@ -14,11 +14,12 @@ Planner later is a registry entry rather than a rewrite of the routing logic.
 import json
 import os
 from datetime import datetime, timezone
-from pathlib import Path
 
 from dotenv import load_dotenv
 from google import genai
 from google.genai import types
+from pymongo import MongoClient
+from pymongo.errors import PyMongoError
 
 from generator import generate_draft, generate_draft_stream
 from planner import ICPS, PILLARS, generate_plan
@@ -248,18 +249,23 @@ USER MESSAGE:
 # resolve. The vector-DB knowledge layer in section 5 of the brief is a
 # separate concern (phase 4).
 #
-# Sessions live in a dict and are mirrored to a JSON file, because a sidebar
-# listing past conversations is worthless if the list empties every time a
-# backend file is saved (Flask's debug reloader) or the server restarts. The
-# file is a development store, not the production answer: it does not survive a
-# container rebuild and two gunicorn workers would clobber each other's writes.
-# Every read and write goes through the accessors below, so swapping in Redis or
-# Postgres at deploy time is confined to this section.
+# Sessions are stored in MongoDB (collection `content_ai_sessions`), not an
+# in-process dict or file, so a sidebar listing past conversations survives a
+# container rebuild and multiple gunicorn workers share one source of truth
+# instead of clobbering each other's writes. A session document is fetched
+# once at the start of a turn, mutated in place as the turn runs, and written
+# back once at the end. Every read and write goes through the accessors below.
 
-SESSIONS = {}
 MAX_HISTORY = 6
 
-STORE_PATH = Path(__file__).resolve().parent / "sessions.json"
+MONGO_URI = os.getenv("MONGO_URI")
+MONGO_DB = os.getenv("MONGO_DB")
+SESSIONS_COLLECTION_NAME = "content_ai_sessions"
+
+_mongo_client = MongoClient(MONGO_URI) if MONGO_URI else None
+_sessions_collection = (
+    _mongo_client[MONGO_DB][SESSIONS_COLLECTION_NAME] if _mongo_client is not None else None
+)
 
 # What the frontend needs to redraw a past turn. `text` is always present and is
 # all the router reads (see _history_block); these are extra keys alongside it,
@@ -278,48 +284,33 @@ def _new_session():
             "title": "", "created": stamp, "updated": stamp}
 
 
-def _load_store():
-    """Read sessions off disk once per process, into SESSIONS.
+def _get_session(session_id):
+    doc = _sessions_collection.find_one({"_id": session_id}) if _sessions_collection is not None else None
+    if doc is None:
+        return _new_session()
+    doc.pop("_id", None)
+    return {**_new_session(), **doc}
 
-    A corrupt or half-written file is treated as no file: losing dev
-    conversation history is a far better outcome than refusing to start.
+
+def _save_store(session_id, session):
+    """Persist one session document. Best-effort: a failed write must never
+    break a turn that already cost a Gemini call, so the error is swallowed.
     """
-    if not STORE_PATH.exists():
+    if _sessions_collection is None:
         return
     try:
-        data = json.loads(STORE_PATH.read_text(encoding="utf-8"))
-    except (json.JSONDecodeError, OSError):
-        return
-    if isinstance(data, dict):
-        for sid, session in data.items():
-            if isinstance(session, dict) and "history" in session:
-                SESSIONS[sid] = {**_new_session(), **session}
-
-
-def _save_store():
-    """Mirror SESSIONS to disk. Best-effort: a failed write must never break a
-    turn that already cost a Gemini call, so the error is swallowed.
-
-    Writes to a temp file and replaces, so a crash mid-write cannot leave the
-    store truncated — os.replace is atomic on the same filesystem.
-    """
-    try:
-        tmp = STORE_PATH.with_suffix(".json.tmp")
-        tmp.write_text(json.dumps(SESSIONS, ensure_ascii=False), encoding="utf-8")
-        os.replace(tmp, STORE_PATH)
-    except OSError:
+        _sessions_collection.replace_one({"_id": session_id}, session, upsert=True)
+    except PyMongoError:
         pass
 
 
-def _get_session(session_id):
-    if session_id not in SESSIONS:
-        SESSIONS[session_id] = _new_session()
-    return SESSIONS[session_id]
-
-
 def reset_session(session_id):
-    SESSIONS.pop(session_id, None)
-    _save_store()
+    if _sessions_collection is None:
+        return
+    try:
+        _sessions_collection.delete_one({"_id": session_id})
+    except PyMongoError:
+        pass
 
 
 def get_history(session_id):
@@ -328,8 +319,10 @@ def get_history(session_id):
     Deliberately not truncated to MAX_HISTORY: that bounds how much context the
     router is given, not how far back a user may scroll.
     """
-    session = SESSIONS.get(session_id)
-    return session["history"] if session else []
+    if _sessions_collection is None:
+        return []
+    doc = _sessions_collection.find_one({"_id": session_id}, {"history": 1})
+    return doc["history"] if doc else []
 
 
 def list_sessions():
@@ -339,19 +332,26 @@ def list_sessions():
     these, and shipping every draft with them would send the whole store on
     every page load.
     """
-    entries = [
-        {
-            "session_id": sid,
-            "title": session.get("title") or "New conversation",
-            "created": session.get("created", ""),
-            "updated": session.get("updated", ""),
-            "turns": len(session.get("history", [])),
-        }
-        for sid, session in SESSIONS.items()
-        if session.get("history")  # a session that was opened but never used
+    if _sessions_collection is None:
+        return []
+    pipeline = [
+        {"$match": {"history.0": {"$exists": True}}},  # a session opened but never used
+        {"$project": {
+            "title": 1, "created": 1, "updated": 1,
+            "turns": {"$size": {"$ifNull": ["$history", []]}},
+        }},
+        {"$sort": {"updated": -1}},
     ]
-    entries.sort(key=lambda e: e["updated"], reverse=True)
-    return entries
+    return [
+        {
+            "session_id": doc["_id"],
+            "title": doc.get("title") or "New conversation",
+            "created": doc.get("created", ""),
+            "updated": doc.get("updated", ""),
+            "turns": doc.get("turns", 0),
+        }
+        for doc in _sessions_collection.aggregate(pipeline)
+    ]
 
 
 def _touch_session(session, message):
@@ -369,10 +369,7 @@ def _touch_session(session, message):
         )
 
 
-_load_store()
-
-
-def _record_agent_turn(session, result):
+def _record_agent_turn(session_id, session, result):
     """Store an agent turn as the same object shape the frontend renders live,
     so replaying history needs no separate rendering path.
 
@@ -388,7 +385,7 @@ def _record_agent_turn(session, result):
 
     # The turn is complete here — every exit path records an agent turn — so
     # this is the one place that has to persist.
-    _save_store()
+    _save_store(session_id, session)
 
 
 def _history_block(session):
@@ -718,7 +715,7 @@ def _handle_message_events(message, session_id="default"):
     unbuilt = [i for i in intents if i in NOT_BUILT]
     if unbuilt:
         result["reply"] = " ".join(NOT_BUILT[i] for i in unbuilt)
-        _record_agent_turn(session, result)
+        _record_agent_turn(session_id, session, result)
         yield {"type": "result", **result}
         return
 
@@ -730,7 +727,7 @@ def _handle_message_events(message, session_id="default"):
             "paste a draft you want scored, say what to turn existing content into, or "
             "ask for a plan for a given period."
         )
-        _record_agent_turn(session, result)
+        _record_agent_turn(session_id, session, result)
         yield {"type": "result", **result}
         return
 
@@ -759,7 +756,7 @@ def _handle_message_events(message, session_id="default"):
             asked = [QUESTIONS.get(m, f"I need a value for {m}.") for m in missing]
             result["reply"] = " ".join(asked)
             result["needs"] = missing
-            _record_agent_turn(session, result)
+            _record_agent_turn(session_id, session, result)
             yield {"type": "result", **result}
             return
 
@@ -792,7 +789,7 @@ def _handle_message_events(message, session_id="default"):
                 f"Here's a {gen_params['channel']} draft. Still {report.get('overall_score')}/100 "
                 f"after {tries}, so it needs a human look. {report.get('summary', '')}"
             )
-        _record_agent_turn(session, result)
+        _record_agent_turn(session_id, session, result)
         yield {"type": "result", **result}
         return
 
@@ -808,7 +805,7 @@ def _handle_message_events(message, session_id="default"):
             asked = [QUESTIONS.get(m, f"I need a value for {m}.") for m in missing]
             result["reply"] = " ".join(asked)
             result["needs"] = missing
-            _record_agent_turn(session, result)
+            _record_agent_turn(session_id, session, result)
             yield {"type": "result", **result}
             return
 
@@ -859,7 +856,7 @@ def _handle_message_events(message, session_id="default"):
         result["channel"] = brief["channel"]
 
     result["reply"] = " ".join(replies)
-    _record_agent_turn(session, result)
+    _record_agent_turn(session_id, session, result)
     yield {"type": "result", **result}
 
 
