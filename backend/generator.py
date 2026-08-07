@@ -22,7 +22,13 @@ CHANNEL_LIMITS = {
     "Instagram": "Aim for 50-125 words. 2200 characters is the hard platform cap.",
     "Email": "Aim for 150-200 words in the body. Subject line under 50 characters.",
     "Blog": "600-1200 words unless the brief says otherwise.",
+    "Graphic": "Headline under 10 words. Supporting text 1-2 short sentences. One CTA. No paragraphs.",
 }
+
+# Channels that hand off structured ad/design copy rather than flowing prose.
+# The Generator's usual "no markdown, plain paragraph" instructions don't
+# apply here — a designer needs the three parts clearly separated.
+STRUCTURED_CHANNELS = {"Graphic"}
 
 
 def _get_client():
@@ -83,6 +89,22 @@ more current — the brand voice doc still governs tone and what to claim public
     if word_limit:
         length_rule = f"Hard limit: {word_limit} words maximum. This overrides the channel default. ({length_rule})"
 
+    if channel in STRUCTURED_CHANNELS:
+        output_rule = (
+            "Output exactly three lines, plain text, no markdown:\n"
+            "Headline: <the headline>\n"
+            "Supporting text: <one to two short sentences>\n"
+            "CTA: <the call to action>\n"
+            "This is copy for a designer to lay out, not a finished post — no extra lines, "
+            "no design notes, no explanation of the concept."
+        )
+    else:
+        output_rule = (
+            "Output plain text only. No markdown of any kind — no headers, no **bold**, no "
+            "backticks, no bullet syntax. If the brief gives a keyword, weave it into a "
+            "sentence as ordinary words."
+        )
+
     # Revising an existing draft is a different job from writing one, so the task
     # line and an extra block change when a previous draft is supplied. Nothing
     # here applies to a first draft.
@@ -117,7 +139,7 @@ LENGTH REQUIREMENT (non-negotiable):
 
 Instructions:
 - Write only the content itself. No preamble, no explanation, no sign-off to the reader about what you did.
-- Output plain text only. No markdown of any kind — no headers, no **bold**, no backticks, no bullet syntax. If the brief gives a keyword, weave it into a sentence as ordinary words.
+- {output_rule}
 - Match the tone and channel conventions described in the brand voice doc.
 - If a CTA is given, end with it clearly.
 - The length requirement above is a constraint, not a target to fill. Shorter is fine.

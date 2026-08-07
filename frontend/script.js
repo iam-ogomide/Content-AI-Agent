@@ -305,7 +305,9 @@ function renderCalendar(container, calendar) {
 function renderAgentResponse(bubble, data, streamedFields) {
   const reply = document.createElement("p");
   reply.className = "reply-text";
-  reply.textContent = data.reply || "";
+  // Live turns carry the reply under `reply`; a turn redrawn from stored
+  // history carries it under `text` instead (see orchestrator._record_agent_turn).
+  reply.textContent = data.reply || data.text || "";
   bubble.insertBefore(reply, bubble.firstChild);
 
   const ran = data.ran || [];
@@ -322,8 +324,16 @@ function renderAgentResponse(bubble, data, streamedFields) {
   }
 
   // Multi-channel generate ("a LinkedIn post and an Instagram caption about X")
-  // already streamed each draft to its own card (fields like "draft:LinkedIn"),
-  // so only the per-channel review reports — not in `ran` above — need adding.
+  // streams each draft to its own card live (fields like "draft:LinkedIn"), so
+  // only redraw them here when reloading from stored history, where nothing
+  // has streamed.
+  for (const { channel, draft } of data.drafts || []) {
+    if (!streamedFields.has(`draft:${channel}`)) {
+      renderTextCard(bubble, `Draft — ${channel}`, draft, channel);
+    }
+  }
+
+  // Per-channel review reports — not in `ran` above — need adding either way.
   for (const { channel, report } of data.reports || []) {
     renderReport(bubble, report, channel);
   }

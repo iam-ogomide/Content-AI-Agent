@@ -13,6 +13,7 @@ Planner later is a registry entry rather than a rewrite of the routing logic.
 
 import json
 import os
+import re
 from datetime import datetime, timezone
 
 from dotenv import load_dotenv
@@ -32,7 +33,7 @@ MODEL_NAME = os.getenv("GEMINI_MODEL", "gemini-2.5-flash")
 
 _client = None
 
-CHANNELS = ["LinkedIn", "X (Twitter)", "Instagram", "Email", "Blog"]
+CHANNELS = ["LinkedIn", "X (Twitter)", "Instagram", "Email", "Blog", "Graphic"]
 
 
 def _get_client():
@@ -179,14 +180,29 @@ re-run generate unless the user asks for new content.
 
 EXTRACTION RULES:
 - channel must be exactly one of: {channels}. Map what the user says onto these
-  ("twitter"/"tweet" -> "X (Twitter)", "IG"/"insta" -> "Instagram", "newsletter" -> "Email").
+  ("twitter"/"tweet" -> "X (Twitter)", "IG"/"insta" -> "Instagram", "newsletter" -> "Email",
+  "graphic copy"/"ad graphic"/"design copy"/"headline and CTA" -> "Graphic"). "Graphic" produces
+  a headline, supporting text, and a CTA only — no design — for handoff to a designer.
   If no channel is stated or implied, omit the field entirely.
 - If a generate request names MORE THAN ONE channel in the same message ("a LinkedIn post
-  and an Instagram caption about X", "write this for LinkedIn and X too"), put every channel
+  and an Instagram caption about X", "write this for LinkedIn and X too", "a full campaign
+  with a LinkedIn post, an Instagram caption, an X post, and graphic copy"), put every channel
   in `channels` as a list and omit `channel` entirely. Each one gets its own draft, all built
   from the same topic/tone/audience/cta/keyword stated in this message. Use `channel`
   (singular) whenever exactly one channel applies — including a follow-up that adds just one
   more ("now do Instagram too"), which stays a single `channel`, not a one-item `channels` list.
+- topic: the concrete subject the content should be about — a specific product, feature,
+  story, or angle. If the message names or lists candidate products/features and leaves the
+  choice to you ("around one CreditChek product", "pick one of our products", a message that
+  names several products in passing without picking one), DO NOT leave topic blank and do not
+  ask which one — pick the single best-fitting candidate yourself (favor the one the rest of
+  the message's audience/angle points at) and set topic to that specific product by name, e.g.
+  "Income Insight". Say which one you picked and why in reasoning. Only omit topic entirely
+  when the message gives you nothing to build from at all — no product named or listed, no
+  feature, no story, no angle. This matters most on a multi-channel request: every channel is
+  generated independently, so an unresolved topic lets each one land on a different product
+  and the "campaign" loses its one core message — resolving it to one concrete product here is
+  what keeps every channel consistent.
 - tone: only if the user describes one. Do not invent a tone.
 - word_limit: an integer, only if the user states a length ("under 200 words" -> 200).
   For character limits on X, leave word_limit unset; the channel handles that.
@@ -204,8 +220,20 @@ EXTRACTION RULES:
   follow-up naming just one channel ("linkedin" in answer to "which channels should it
   cover?") — put it in `channels` as a single-item list, never in `channel`. If the user
   says "everything" or names no channel, omit the field and it will be asked for.
-- pillars, theme, icp, posts_per_week: plan requests only, and only if the user says so.
-  theme is a campaign or thread to build the calendar around ("our diaspora push").
+- pillars, theme, icp, posts_per_week: plan requests ONLY — never populate these for a
+  "generate" intent, even one covering several channels. The word "campaign" is ambiguous in
+  casual use: a message calling for a calendar of future posts is a plan request (these fields
+  apply), but a message that asks you to write specific pieces right now — "a LinkedIn post, an
+  Instagram caption, an X post" — is a multi-channel generate request even if the user calls it
+  a "campaign". For that kind of request, treat it exactly like any other generate request:
+  extract tone/audience/cta/keyword from what the message actually says, and do not reach for
+  pillars/theme/icp/posts_per_week instead of them.
+  Example: "Write a LinkedIn post and an Instagram caption about Income Insight for lenders,
+  professional tone." -> intents ["generate"], topic "Income Insight",
+  channels ["LinkedIn", "Instagram"], tone "professional", audience "lenders" (plus
+  is_followup/reasoning). Nothing else — no pillars, theme, icp, or posts_per_week, and
+  tone/audience are populated exactly as they would be for a single-channel request; having
+  more than one channel changes nothing about how those two fields are read.
 - Omit any field the user did not give you. Do not guess or fill in defaults.
 
 AUTO-REVISE: set auto_revise true only when the user asks for content to be brought up
@@ -219,6 +247,16 @@ should be ["generate", "review"].
 FOLLOW-UPS: set is_followup true when the message modifies a previous request rather
 than starting a new one ("make it shorter", "try a warmer tone", "now do one for X").
 On a follow-up, only extract the fields the user is actually changing.
+
+ANSWERING A CLARIFYING QUESTION: if the last agent turn in CONVERSATION SO FAR ends in a
+question (it asked for a missing topic, tone, channel, timeframe, etc.), treat this message
+as completing that same request rather than a new or unclear one — even when it is a single
+bare word or phrase with no other context ("professional", "LinkedIn", "our new savings
+product", "next 2 weeks"). Set is_followup true, reuse the same intents the previous turn
+was building toward (visible from what was asked and what the brief so far is missing —
+usually ["generate"]), and extract the field(s) this message answers. Only fall back to
+"unknown" when the message neither answers the pending question nor reads as any kind of
+content request.
 
 REVISION NOTES: on a follow-up asking to change existing content, put the change in
 revision_note as a short instruction ("make it shorter", "cut the mention of Africa",
@@ -270,7 +308,7 @@ _sessions_collection = (
 # What the frontend needs to redraw a past turn. `text` is always present and is
 # all the router reads (see _history_block); these are extra keys alongside it,
 # so widening this list stays invisible to routing.
-ARTIFACT_KEYS = ("ran", "draft", "repurposed", "report", "calendar", "channel")
+ARTIFACT_KEYS = ("ran", "draft", "repurposed", "report", "calendar", "channel", "drafts", "reports")
 
 # How many characters of the opening message become a conversation's title.
 TITLE_LENGTH = 60
@@ -399,6 +437,35 @@ def _history_block(session):
 # Routing
 # --------------------------------------------------------------------------
 
+# The router reliably confuses a multi-channel generate ("a LinkedIn post, an
+# Instagram caption, and an X post") with a plan/calendar request once it sees
+# more than one channel — even with explicit rules and a worked example telling
+# it not to — and fills these plan-only fields while dropping tone/audience
+# instead of extracting them. Rather than keep fighting the model's prior in
+# prose, strip these deterministically whenever "plan" isn't one of the
+# returned intents, since AGENTS["generate"] never consumes them anyway.
+PLAN_ONLY_FIELDS = ("pillars", "theme", "icp", "posts_per_week", "timeframe")
+
+# Same failure mode's other half: tone is a required field for "generate", so
+# losing it to the same confusion forces a clarifying question the user has
+# already answered in plain text ("...professional tone."). A small regex
+# catches the common "<word> tone" phrasing the router keeps dropping, without
+# a second model call. Words that name the tone belong right before "tone";
+# these are the fillers that would land there without actually naming one.
+_TONE_STOPWORDS = {
+    "the", "a", "an", "this", "that", "same", "right", "correct",
+    "appropriate", "usual", "similar", "matching", "consistent",
+}
+_TONE_RE = re.compile(r"\b([a-zA-Z][a-zA-Z-]*)\s+tone\b", re.IGNORECASE)
+
+
+def _fallback_tone(message):
+    for match in _TONE_RE.finditer(message):
+        word = match.group(1).lower()
+        if word not in _TONE_STOPWORDS:
+            return word
+    return None
+
 
 def route(message, session=None):
     """Turn a plain-English message into a plan plus extracted params."""
@@ -426,9 +493,25 @@ def route(message, session=None):
         config=types.GenerateContentConfig(
             response_mime_type="application/json",
             response_schema=ROUTE_SCHEMA,
+            # This is classification/extraction, not creative writing — the
+            # default temperature let identical follow-ups ("professional"
+            # answering a tone question) sometimes route correctly and
+            # sometimes come back as a fresh, context-free request, wiping
+            # the brief built up so far. Low temperature makes the same input
+            # route the same way.
+            temperature=0.1,
         ),
     )
     routed = json.loads(response.text)
+
+    if "plan" not in routed.get("intents", []):
+        for field in PLAN_ONLY_FIELDS:
+            routed.pop(field, None)
+
+    if not routed.get("tone"):
+        guess = _fallback_tone(message)
+        if guess:
+            routed["tone"] = guess
 
     # Strip the empty strings the schema allows so they don't overwrite
     # remembered values when merged into the session brief.
@@ -572,7 +655,7 @@ def _auto_revise_stream(generate_spec, review_spec, gen_params, channel, brief=N
 MULTI_CHANNEL_INTENTS = {"generate", "review"}
 
 
-def _run_multi_channel_stream(channels, do_review, auto_revise, brief, session, result):
+def _run_multi_channel_stream(channels, do_review, auto_revise, brief, session, result, session_id):
     """Run generate (and optionally review/auto-revise) once per channel named
     in a single message, streaming each draft to its own card.
 
@@ -592,7 +675,7 @@ def _run_multi_channel_stream(channels, do_review, auto_revise, brief, session, 
         asked = [QUESTIONS.get(m, f"I need a value for {m}.") for m in missing]
         result["reply"] = " ".join(asked)
         result["needs"] = missing
-        session["history"].append({"role": "agent", "text": result["reply"]})
+        _record_agent_turn(session_id, session, result)
         yield {"type": "result", **result}
         return
 
@@ -639,8 +722,9 @@ def _run_multi_channel_stream(channels, do_review, auto_revise, brief, session, 
         result["reports"] = reports
     if auto_revise:
         result["auto_revised"] = True
-    result["reply"] = " ".join(reply_parts)
-    session["history"].append({"role": "agent", "text": result["reply"]})
+    lead = f"Built this around {brief['topic']}. " if brief.get("topic") else ""
+    result["reply"] = lead + " ".join(reply_parts)
+    _record_agent_turn(session_id, session, result)
     yield {"type": "result", **result}
 
 
@@ -742,7 +826,7 @@ def _handle_message_events(message, session_id="default"):
         and set(runnable) <= MULTI_CHANNEL_INTENTS
     ):
         yield from _run_multi_channel_stream(
-            channels_field, "review" in runnable, auto_revise, brief, session, result
+            channels_field, "review" in runnable, auto_revise, brief, session, result, session_id
         )
         return
 
