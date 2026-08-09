@@ -7,7 +7,7 @@ from google import genai
 load_dotenv()
 
 BRAND_VOICE_PATH = Path(__file__).resolve().parent.parent / "brand_voice.md"
-MODEL_NAME = os.getenv("GEMINI_MODEL", "gemini-2.5-flash")
+MODEL_NAME = os.getenv("GEMINI_MODEL", "gemini-3.1-flash-lite")
 
 _client = None
 
