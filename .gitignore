@@ -8,3 +8,4 @@ backend/scratch.py
 # conflict on every pull.
 backend/sessions.json
 backend/sessions.json.tmp
+backend/.canva_tokens.json
