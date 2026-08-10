@@ -318,7 +318,7 @@ def _new_session():
     # `created` orders the sidebar; `updated` is what actually sorts it, so a
     # revived old conversation rises back to the top.
     stamp = datetime.now(timezone.utc).isoformat()
-    return {"history": [], "brief": {}, "last_draft": None,
+    return {"history": [], "brief": {}, "last_draft": None, "pending_needs": None,
             "title": "", "created": stamp, "updated": stamp}
 
 
@@ -464,6 +464,34 @@ def _fallback_tone(message):
         word = match.group(1).lower()
         if word not in _TONE_STOPWORDS:
             return word
+    return None
+
+
+def _fallback_answer(field, message):
+    """Deterministic fallback for a bare reply to a clarifying question the
+    session is still waiting on (see `pending_needs`).
+
+    The router LLM sometimes gets everything else about a follow-up right
+    (is_followup, reasoning naming the exact field) but drops that field from
+    its own JSON output — e.g. "professional" answering "What tone should it
+    take?" comes back with no `tone` key at all. A short, sentence-free reply
+    to a question that was just asked is almost certainly a direct answer to
+    it, so trust it instead of asking the same question again.
+    """
+    text = message.strip()
+    if not text or len(text.split()) > 5:
+        return None
+
+    lowered = text.lower()
+    if field == "channel":
+        return next((c for c in CHANNELS if c.lower() == lowered), None)
+    if field == "channels":
+        match = next((c for c in CHANNELS if c.lower() == lowered), None)
+        return [match] if match else None
+    if field == "target_format":
+        return next((f for f in TARGET_FORMATS if f.lower() == lowered), None)
+    if field in ("tone", "topic", "timeframe"):
+        return text
     return None
 
 
@@ -675,6 +703,7 @@ def _run_multi_channel_stream(channels, do_review, auto_revise, brief, session, 
         asked = [QUESTIONS.get(m, f"I need a value for {m}.") for m in missing]
         result["reply"] = " ".join(asked)
         result["needs"] = missing
+        session["pending_needs"] = missing
         _record_agent_turn(session_id, session, result)
         yield {"type": "result", **result}
         return
@@ -749,6 +778,17 @@ def _handle_message_events(message, session_id="default"):
     is_followup = routed.pop("is_followup", False)
     reasoning = routed.pop("reasoning", "")
     auto_revise = routed.pop("auto_revise", False)
+
+    # A field the previous turn explicitly asked about ("What tone should it
+    # take?") is worth trusting a bare reply for, even when the router's own
+    # extraction dropped it. See `_fallback_answer`.
+    pending_needs = session.pop("pending_needs", None)
+    if pending_needs and is_followup:
+        for field in pending_needs:
+            if field not in routed:
+                fallback = _fallback_answer(field, message)
+                if fallback is not None:
+                    routed[field] = fallback
 
     # A bare follow-up naming one channel ("linkedin") sometimes lands in the
     # singular `channel` slot instead of the plural `channels` a plan needs.
@@ -840,6 +880,7 @@ def _handle_message_events(message, session_id="default"):
             asked = [QUESTIONS.get(m, f"I need a value for {m}.") for m in missing]
             result["reply"] = " ".join(asked)
             result["needs"] = missing
+            session["pending_needs"] = missing
             _record_agent_turn(session_id, session, result)
             yield {"type": "result", **result}
             return
@@ -889,6 +930,7 @@ def _handle_message_events(message, session_id="default"):
             asked = [QUESTIONS.get(m, f"I need a value for {m}.") for m in missing]
             result["reply"] = " ".join(asked)
             result["needs"] = missing
+            session["pending_needs"] = missing
             _record_agent_turn(session_id, session, result)
             yield {"type": "result", **result}
             return
