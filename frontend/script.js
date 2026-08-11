@@ -10,6 +10,7 @@ const newChatBtn = document.getElementById("new-chat-btn");
 
 const CATEGORY_LABELS = {
   tone: "Tone",
+  human_voice: "Human voice",
   clarity: "Clarity",
   cta_strength: "CTA strength",
   grammar: "Grammar",

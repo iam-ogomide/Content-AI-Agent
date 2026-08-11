@@ -36,6 +36,28 @@ FORMAT_GUIDANCE = {
 }
 
 
+HUMAN_VOICE_RULES = """WRITE LIKE A PERSON, NOT A MODEL — this is as important as the brand voice rules above:
+- Vary sentence length on purpose. A steady run of medium, evenly-balanced sentences is the
+  single biggest tell that a model wrote this — mix a short sentence next to a longer one.
+- Do not open with a scene-setting throat-clear ("In today's fast-paced/competitive world...",
+  "In an era of...", "When it comes to X..."). Start on the actual point.
+- Avoid formulaic connective tissue — "Moreover," "Furthermore," "Additionally," "In conclusion,"
+  "At the end of the day." Use a plain word instead, or no transition at all.
+- Don't reach for a rule-of-three (three examples, three adjectives, a three-part list) as a
+  rhythm crutch. Use exactly as many as the point needs — often one or two.
+- Cut hedging filler — "it's important to note that," "it's worth mentioning," "can potentially,"
+  "in many cases." State the claim.
+- Don't close with a tidy restatement of what you just said ("In summary, X helps you Y and Z").
+  Stop once the point is made.
+- Avoid words a model reaches for reflexively: "delve," "unpack," "navigate," "landscape,"
+  "ecosystem," "leverage," "seamless," "robust," "holistic," "underscore," "elevate,"
+  "in the realm of." Use a plain word, or cut it.
+- Don't default to an em-dash as a way to bolt on a clause. Use one only where a period or
+  comma would genuinely read worse.
+- Write like someone who actually knows this subject and is telling one specific person
+  something, not summarizing a topic for a general audience."""
+
+
 def build_prompt(source_content, target_format, tone_shift=None, word_limit=None):
     brand_voice = _load_brand_voice()
     guidance = FORMAT_GUIDANCE.get(target_format, f"Content formatted as: {target_format}")
@@ -61,6 +83,8 @@ SOURCE CONTENT:
 
 REPURPOSING INSTRUCTIONS:
 {constraints_block}
+
+{HUMAN_VOICE_RULES}
 
 Output only the repurposed content itself. No preamble, no explanation, no markdown headers.
 

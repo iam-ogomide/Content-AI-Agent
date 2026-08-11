@@ -24,6 +24,11 @@ REVIEW_SCHEMA = {
             "properties": {"score": {"type": "integer"}, "notes": {"type": "string"}},
             "required": ["score", "notes"],
         },
+        "human_voice": {
+            "type": "object",
+            "properties": {"score": {"type": "integer"}, "notes": {"type": "string"}},
+            "required": ["score", "notes"],
+        },
         "clarity": {
             "type": "object",
             "properties": {"score": {"type": "integer"}, "notes": {"type": "string"}},
@@ -50,6 +55,7 @@ REVIEW_SCHEMA = {
         "overall_score",
         "summary",
         "tone",
+        "human_voice",
         "clarity",
         "cta_strength",
         "grammar",
@@ -111,6 +117,13 @@ DRAFT TO REVIEW:
 
 Score each category 0-100 and give concise, actionable notes (1-2 sentences each):
 - tone: does it match the brand voice doc's tone and vocabulary rules? Check section 3 of the doc ("one person, one problem, one solution") explicitly and score against it as written, including its stated exception. Penalize violations of it specifically and name the rule in the notes.
+- human_voice: does this read like a person wrote it, or like a model did? Score down for: an even,
+  steady sentence rhythm with no variation in length; scene-setting openers ("In today's fast-paced
+  world...", "In an era of..."); formulaic transitions ("Moreover," "Furthermore," "In conclusion");
+  reflexive rule-of-three lists; hedging filler ("it's important to note," "can potentially"); a tidy
+  closing restatement of what was just said; overused model-vocabulary ("delve," "unpack," "leverage,"
+  "seamless," "robust," "landscape," "ecosystem," "elevate," "underscore"); or em-dashes used as a
+  default way to bolt on a clause. Name the specific tell(s) found, in the notes.
 - clarity: is it easy to understand, one idea per piece, no unexplained jargon?
 - cta_strength: is the CTA (if any) clear and singular? If there's no CTA, note that.
 - grammar: spelling, grammar, punctuation issues.

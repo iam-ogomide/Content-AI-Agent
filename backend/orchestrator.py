@@ -641,7 +641,7 @@ def _revision_note_from(report):
 
     # Category notes are more specific than the summary, so include the ones
     # that actually failed.
-    for key in ("tone", "clarity", "cta_strength", "grammar", "seo_basics"):
+    for key in ("tone", "human_voice", "clarity", "cta_strength", "grammar", "seo_basics"):
         category = report.get(key) or {}
         if isinstance(category, dict) and category.get("score", 100) < 75:
             note = (category.get("notes") or "").strip()
