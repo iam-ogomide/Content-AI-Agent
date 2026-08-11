@@ -203,7 +203,14 @@ EXTRACTION RULES:
   generated independently, so an unresolved topic lets each one land on a different product
   and the "campaign" loses its one core message — resolving it to one concrete product here is
   what keeps every channel consistent.
-- tone: only if the user describes one. Do not invent a tone.
+- tone: extract it whenever the user gives ANY cue about how the content should sound —
+  a bare adjective ("professional", "punchy"), a list of them ("casual and friendly"), or a
+  phrase built around the word ("in a warm tone", "keep the tone professional", "tone: bold",
+  "make it sound confident", "write like a friend explaining this"). The cue can come before
+  or after the word "tone", or not mention the word at all. Once the user has stated it in
+  this message or an earlier one still in effect, it is known — never leave it blank so a
+  clarifying question gets asked again for something already said. Only omit the field when
+  the message truly gives no cue about tone at all. Do not invent a tone from nothing.
 - word_limit: an integer, only if the user states a length ("under 200 words" -> 200).
   For character limits on X, leave word_limit unset; the channel handles that.
 - draft: only fill this if the user pasted actual content to be reviewed or repurposed.
@@ -448,22 +455,31 @@ PLAN_ONLY_FIELDS = ("pillars", "theme", "icp", "posts_per_week", "timeframe")
 
 # Same failure mode's other half: tone is a required field for "generate", so
 # losing it to the same confusion forces a clarifying question the user has
-# already answered in plain text ("...professional tone."). A small regex
-# catches the common "<word> tone" phrasing the router keeps dropping, without
-# a second model call. Words that name the tone belong right before "tone";
-# these are the fillers that would land there without actually naming one.
+# already answered in plain text ("...professional tone." / "tone: casual" /
+# "keep the tone professional"). Two small regexes catch the common phrasings
+# the router keeps dropping, without a second model call — one for the word
+# order "<word> tone" and one for the reversed "tone <connector> <word>".
+# Words that name the tone belong right next to "tone"; these are the fillers
+# that would land there without actually naming one.
 _TONE_STOPWORDS = {
     "the", "a", "an", "this", "that", "same", "right", "correct",
     "appropriate", "usual", "similar", "matching", "consistent",
 }
 _TONE_RE = re.compile(r"\b([a-zA-Z][a-zA-Z-]*)\s+tone\b", re.IGNORECASE)
+# Requires an explicit connector after "tone" (not bare adjacency) so a plain
+# mention like "the tone matters" doesn't get read as naming "matters".
+_TONE_RE_REVERSED = re.compile(
+    r"\btone\b\s*(?:should be|shall be|needs to be|is|:|-)\s*([a-zA-Z][a-zA-Z-]*)",
+    re.IGNORECASE,
+)
 
 
 def _fallback_tone(message):
-    for match in _TONE_RE.finditer(message):
-        word = match.group(1).lower()
-        if word not in _TONE_STOPWORDS:
-            return word
+    for pattern in (_TONE_RE, _TONE_RE_REVERSED):
+        for match in pattern.finditer(message):
+            word = match.group(1).lower()
+            if word not in _TONE_STOPWORDS:
+                return word
     return None
 
 
