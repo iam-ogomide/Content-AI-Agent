@@ -22,6 +22,7 @@ from google.genai import types
 from pymongo import MongoClient
 from pymongo.errors import PyMongoError
 
+from designer import generate_visual
 from generator import generate_draft, generate_draft_stream
 from planner import ICPS, PILLARS, generate_plan
 from repurposer import repurpose_content, repurpose_content_stream
@@ -106,6 +107,16 @@ AGENTS = {
         # The Reviewer can't see that from prose alone, so hand it the brief.
         "wants_brief": True,
     },
+    "design": {
+        "fn": generate_visual,
+        "label": "Designer",
+        "required": ["topic", "channel"],
+        "optional": ["headline", "draft_excerpt", "style_note"],
+        # Chaining off "generate" hands the just-written draft in as context
+        # (not as text to put on the graphic — see designer.py's prompt).
+        "consumes": "draft_excerpt",
+        "produces": "visual",
+    },
 }
 
 # Repurpose targets, and the channel each one lands on so a follow-up review
@@ -135,7 +146,7 @@ ROUTE_SCHEMA = {
             "type": "array",
             "items": {
                 "type": "string",
-                "enum": ["generate", "review", "repurpose", "plan", "unknown"],
+                "enum": ["generate", "review", "repurpose", "plan", "design", "unknown"],
             },
         },
         "topic": {"type": "string"},
@@ -146,6 +157,8 @@ ROUTE_SCHEMA = {
         "keyword": {"type": "string"},
         "word_limit": {"type": "integer"},
         "draft": {"type": "string"},
+        "headline": {"type": "string"},
+        "style_note": {"type": "string"},
         "target_format": {"type": "string", "enum": TARGET_FORMATS},
         "tone_shift": {"type": "string"},
         "timeframe": {"type": "string"},
@@ -170,13 +183,15 @@ AVAILABLE INTENTS:
 - review: the user wants existing content scored against brand guidelines.
 - repurpose: the user wants existing content reformatted for a different channel.
 - plan: the user wants a content calendar built.
+- design: the user wants a visual/graphic/image made — not written content.
 - unknown: the message is not a content request (a greeting, an unrelated question).
 
 CHAINING: return multiple intents in the order they should run. "Write a LinkedIn post
 and check the tone" is ["generate", "review"]. Reviewing what was just generated is a
 chain, not two separate requests. "Write a blog post and turn it into a thread" is
 ["generate", "repurpose"]. Repurposing the last draft is a repurpose on its own — do not
-re-run generate unless the user asks for new content.
+re-run generate unless the user asks for new content. "Write a LinkedIn post and make a
+graphic for it" is ["generate", "design"] — the design step uses the draft just written.
 
 EXTRACTION RULES:
 - channel must be exactly one of: {channels}. Map what the user says onto these
@@ -241,6 +256,11 @@ EXTRACTION RULES:
   is_followup/reasoning). Nothing else — no pillars, theme, icp, or posts_per_week, and
   tone/audience are populated exactly as they would be for a single-channel request; having
   more than one channel changes nothing about how those two fields are read.
+- For design requests: topic and channel work the same as generate. headline is only
+  set if the user gives exact text to feature on the graphic — do not invent one.
+  style_note is only set if the user describes a visual style ("more minimal",
+  "use the orange"). Do not fill draft_excerpt yourself — when design follows generate
+  in the same chain, the pipeline supplies it automatically from the draft just written.
 - Omit any field the user did not give you. Do not guess or fill in defaults.
 
 AUTO-REVISE: set auto_revise true only when the user asks for content to be brought up
@@ -315,7 +335,10 @@ _sessions_collection = (
 # What the frontend needs to redraw a past turn. `text` is always present and is
 # all the router reads (see _history_block); these are extra keys alongside it,
 # so widening this list stays invisible to routing.
-ARTIFACT_KEYS = ("ran", "draft", "repurposed", "report", "calendar", "channel", "drafts", "reports")
+ARTIFACT_KEYS = (
+    "ran", "draft", "repurposed", "report", "calendar", "visual", "channel",
+    "drafts", "reports",
+)
 
 # How many characters of the opening message become a conversation's title.
 TITLE_LENGTH = 60
@@ -991,6 +1014,14 @@ def _handle_message_events(message, session_id="default"):
         elif spec["produces"] == "report":
             verdict = "Looks good" if output.get("verdict") == "pass" else "Needs work"
             replies.append(f"{verdict} — {output.get('overall_score')}/100. {output.get('summary', '')}")
+        elif spec["produces"] == "visual":
+            # generate_visual returns the model's raw final turn (which should
+            # contain the Canva export URL per designer.py's prompt) rather than
+            # a parsed field — surface it as-is until that gets tightened up.
+            #
+            # Not last_draft: a visual is not text, so "make it shorter" must
+            # never try to revise it. Same reasoning as a calendar.
+            replies.append(f"Made a visual for {params['channel']}: {output}")
 
     # Lets the frontend offer a "Review" action on a draft/repurposed card
     # without asking the user which channel it was written for.
