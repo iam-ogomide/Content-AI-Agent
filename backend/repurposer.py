@@ -4,6 +4,8 @@ from pathlib import Path
 from dotenv import load_dotenv
 from google import genai
 
+from tracing import model_span
+
 load_dotenv()
 
 BRAND_VOICE_PATH = Path(__file__).resolve().parent.parent / "brand_voice.md"
@@ -100,10 +102,12 @@ def repurpose_content(source_content, target_format, tone_shift=None, word_limit
     client = _get_client()
     prompt = build_prompt(source_content, target_format, tone_shift, word_limit)
 
-    response = client.models.generate_content(
-        model=MODEL_NAME,
-        contents=prompt,
-    )
+    with model_span("repurpose_content", prompt, MODEL_NAME) as span:
+        response = client.models.generate_content(
+            model=MODEL_NAME,
+            contents=prompt,
+        )
+        span.record(response)
     return response.text
 
 
@@ -115,6 +119,15 @@ def repurpose_content_stream(source_content, target_format, tone_shift=None, wor
     client = _get_client()
     prompt = build_prompt(source_content, target_format, tone_shift, word_limit)
 
-    for chunk in client.models.generate_content_stream(model=MODEL_NAME, contents=prompt):
-        if chunk.text:
-            yield chunk.text
+    # See generate_draft_stream in generator.py — same shape, same reason for
+    # assembling the text as it goes.
+    with model_span("repurpose_content_stream", prompt, MODEL_NAME) as span:
+        pieces, last = [], None
+        try:
+            for chunk in client.models.generate_content_stream(model=MODEL_NAME, contents=prompt):
+                last = chunk  # token counts ride on the final chunk
+                if chunk.text:
+                    pieces.append(chunk.text)
+                    yield chunk.text
+        finally:
+            span.record_text("".join(pieces), last)

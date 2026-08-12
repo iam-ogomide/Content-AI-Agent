@@ -299,6 +299,109 @@ function renderCalendar(container, calendar) {
   container.appendChild(card);
 }
 
+function renderVisual(container, visual) {
+  const card = document.createElement("div");
+  card.className = "result-card visual-card";
+
+  const header = document.createElement("div");
+  header.className = "result-card-header";
+  const h = document.createElement("h3");
+  h.textContent = visual.channel ? `Visual — ${visual.channel}` : "Visual";
+  header.appendChild(h);
+
+  const actions = document.createElement("div");
+  actions.className = "result-card-actions";
+
+  // A plain anchor, not a fetch: the export URL is already a direct PNG
+  // download, so there's nothing for the backend to do here (unlike the
+  // calendar's Download, which has to build the file first). Absent when the
+  // design was made but its PNG export failed — there is nothing to download,
+  // and a Download button that 404s is worse than no button.
+  let download = null;
+  if (visual.export_url) {
+    download = document.createElement("a");
+    download.className = "ghost-btn visual-btn";
+    download.textContent = "Download";
+    download.href = visual.export_url;
+    download.download = `${visual.channel || "visual"}.png`;
+    actions.appendChild(download);
+  }
+
+  if (visual.edit_url) {
+    const edit = document.createElement("a");
+    edit.className = "ghost-btn visual-btn";
+    edit.textContent = "Edit in Canva";
+    edit.href = visual.edit_url;
+    edit.target = "_blank";
+    edit.rel = "noopener";
+    actions.appendChild(edit);
+  }
+  header.appendChild(actions);
+  card.appendChild(header);
+
+  if (!visual.export_url) {
+    // The design exists in Canva; only the preview PNG is missing. Say that,
+    // rather than showing a broken image or the "expired" wording below, which
+    // would be a different and wrong explanation.
+    const note = document.createElement("p");
+    note.className = "visual-expired";
+    note.textContent =
+      visual.export_error ||
+      (visual.edit_url
+        ? "No preview image for this one. The design is in Canva — open it with Edit in Canva."
+        : "No preview image is available for this design.");
+    card.appendChild(note);
+    renderVisualMeta(card, visual);
+    container.appendChild(card);
+    return;
+  }
+
+  const link = document.createElement("a");
+  link.href = visual.export_url;
+  link.target = "_blank";
+  link.rel = "noopener";
+  const img = document.createElement("img");
+  img.className = "visual-image";
+  img.src = visual.export_url;
+  img.alt = visual.title || `Generated visual for ${visual.channel || "this channel"}`;
+  // Reserving the real aspect ratio stops the card from snapping open as the
+  // PNG (roughly a megabyte) arrives.
+  if (visual.width && visual.height) {
+    img.style.aspectRatio = `${visual.width} / ${visual.height}`;
+  }
+
+  // Canva's export URL is presigned and expires (~18 hours), so a turn redrawn
+  // from stored history will eventually have a dead image. Swap in the Canva
+  // links, which don't expire, rather than leaving a broken-image icon.
+  img.addEventListener("error", () => {
+    link.remove();
+    if (download) download.remove();
+    const expired = document.createElement("p");
+    expired.className = "visual-expired";
+    expired.textContent = visual.edit_url
+      ? "This preview link has expired. The design is still in Canva — open it with Edit in Canva."
+      : "This preview link has expired and the design is no longer reachable.";
+    card.appendChild(expired);
+  });
+
+  link.appendChild(img);
+  card.appendChild(link);
+
+  renderVisualMeta(card, visual);
+  container.appendChild(card);
+}
+
+function renderVisualMeta(card, visual) {
+  const meta = [];
+  if (visual.title) meta.push(visual.title);
+  if (visual.width && visual.height) meta.push(`${visual.width}×${visual.height} PNG`);
+  if (!meta.length) return;
+  const p = document.createElement("p");
+  p.className = "visual-meta";
+  p.textContent = meta.join(" · ");
+  card.appendChild(p);
+}
+
 // Fields whose text arrived via streaming already have a card (with its own
 // Copy/Review buttons) built live by getOrCreateTextCard — this only fills in
 // whatever a turn produced that never streams: the reply line, review
@@ -321,6 +424,9 @@ function renderAgentResponse(bubble, data, streamedFields) {
       renderReport(bubble, data.report);
     } else if (intent === "plan" && data.calendar) {
       renderCalendar(bubble, data.calendar);
+    } else if ((intent === "design" || intent === "revise_visual") && data.visual) {
+      // An edited visual is still a visual: same payload shape, same card.
+      renderVisual(bubble, data.visual);
     }
   }
 

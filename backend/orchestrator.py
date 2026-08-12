@@ -22,7 +22,8 @@ from google.genai import types
 from pymongo import MongoClient
 from pymongo.errors import PyMongoError
 
-from designer import generate_visual
+from designer import generate_visual, revise_visual
+from tracing import model_span
 from generator import generate_draft, generate_draft_stream
 from planner import ICPS, PILLARS, generate_plan
 from repurposer import repurpose_content, repurpose_content_stream
@@ -117,6 +118,20 @@ AGENTS = {
         "consumes": "draft_excerpt",
         "produces": "visual",
     },
+    "revise_visual": {
+        "fn": revise_visual,
+        "label": "Designer",
+        # design_id and channel are never extracted from the user's message —
+        # they're injected from session["last_visual"] (see the aliases, which
+        # keep the visual's own channel separate from the text brief's channel,
+        # so a "now do Instagram" on the copy side can't silently retarget an
+        # existing LinkedIn graphic).
+        "required": ["design_id", "instruction"],
+        "optional": ["channel"],
+        "aliases": {"instruction": "visual_note", "channel": "visual_channel"},
+        "consumes": None,
+        "produces": "visual",
+    },
 }
 
 # Repurpose targets, and the channel each one lands on so a follow-up review
@@ -146,7 +161,8 @@ ROUTE_SCHEMA = {
             "type": "array",
             "items": {
                 "type": "string",
-                "enum": ["generate", "review", "repurpose", "plan", "design", "unknown"],
+                "enum": ["generate", "review", "repurpose", "plan", "design",
+                         "revise_visual", "unknown"],
             },
         },
         "topic": {"type": "string"},
@@ -159,6 +175,7 @@ ROUTE_SCHEMA = {
         "draft": {"type": "string"},
         "headline": {"type": "string"},
         "style_note": {"type": "string"},
+        "visual_note": {"type": "string"},
         "target_format": {"type": "string", "enum": TARGET_FORMATS},
         "tone_shift": {"type": "string"},
         "timeframe": {"type": "string"},
@@ -184,6 +201,9 @@ AVAILABLE INTENTS:
 - repurpose: the user wants existing content reformatted for a different channel.
 - plan: the user wants a content calendar built.
 - design: the user wants a visual/graphic/image made — not written content.
+- revise_visual: the user wants a CHANGE to a visual that already exists in this
+  conversation ("change the headline to X", "make the subtext shorter", "swap the CTA").
+  Only valid when CURRENT VISUAL appears below; without one there is nothing to edit.
 - unknown: the message is not a content request (a greeting, an unrelated question).
 
 CHAINING: return multiple intents in the order they should run. "Write a LinkedIn post
@@ -199,6 +219,12 @@ EXTRACTION RULES:
   "graphic copy"/"ad graphic"/"design copy"/"headline and CTA" -> "Graphic"). "Graphic" produces
   a headline, supporting text, and a CTA only — no design — for handoff to a designer.
   If no channel is stated or implied, omit the field entirely.
+- On a `design` request, channel is WHERE THE IMAGE WILL BE PUBLISHED, and "Graphic" is
+  never a valid answer — it is a copy format, not a place. The words "visual", "graphic",
+  or "image" describe what to make, not the channel: "make me a LinkedIn visual" is
+  channel "LinkedIn", and "design a graphic for Instagram" is channel "Instagram". The
+  channel sets the design's dimensions, so getting this wrong produces a
+  correctly-designed image at the wrong size for where it's going.
 - If a generate request names MORE THAN ONE channel in the same message ("a LinkedIn post
   and an Instagram caption about X", "write this for LinkedIn and X too", "a full campaign
   with a LinkedIn post, an Instagram caption, an X post, and graphic copy"), put every channel
@@ -261,7 +287,31 @@ EXTRACTION RULES:
   style_note is only set if the user describes a visual style ("more minimal",
   "use the orange"). Do not fill draft_excerpt yourself — when design follows generate
   in the same chain, the pipeline supplies it automatically from the draft just written.
+- For revise_visual requests: visual_note is the change in the user's own words, kept as a
+  short instruction ("change the headline to 'Onboard in Minutes'", "make the bottom line
+  shorter", "drop the exclamation mark"). Keep any exact wording the user gave, verbatim and
+  in quotes — that text goes onto the design. Do NOT set revision_note, topic, or channel on
+  a revise_visual request: nothing is being rewritten and the visual keeps the channel it
+  was built for. Editing changes TEXT ONLY; a request for different colors, imagery, or
+  layout is still revise_visual (it will explain what it cannot do) unless the user clearly
+  wants a whole new visual.
 - Omit any field the user did not give you. Do not guess or fill in defaults.
+
+TEXT REVISION vs VISUAL REVISION — these are different intents and the difference is what
+the change applies to. Deciding it is visual does NOT change how a text revision is
+handled: whenever the change applies to the copy, extract revision_note (and word_limit)
+exactly as the REVISION NOTES section below requires.
+- "make it shorter" or "make it punchier" right after a draft is a text revision ->
+  "generate" with revision_note set to that instruction.
+- "make the headline on the graphic shorter" is -> "revise_visual" with visual_note.
+- When the message names the image ("the graphic", "the visual", "the image", "the
+  headline on it", "the design"), it is revise_visual.
+- When the message is ambiguous ("make it punchier") and CURRENT VISUAL exists, decide by
+  what the LAST agent turn produced: if that turn made or edited a visual and no draft, the
+  user means the visual; if it produced a draft, they mean the draft.
+- A request for a NEW, different visual ("make another one", "design a fresh graphic",
+  "try a completely different look") is "design", not revise_visual. revise_visual keeps
+  the existing design's layout and imagery and only changes its wording.
 
 AUTO-REVISE: set auto_revise true only when the user asks for content to be brought up
 to standard without further input from them — "polish it", "make sure it's good",
@@ -301,7 +351,7 @@ revision_note as a short instruction ("make it shorter", "cut the mention of Afr
 
 reasoning: one short sentence on why you picked these intents.
 
-{history_block}{draft_block}
+{history_block}{draft_block}{visual_block}
 USER MESSAGE:
 {message}
 """
@@ -348,8 +398,12 @@ def _new_session():
     # `created` orders the sidebar; `updated` is what actually sorts it, so a
     # revived old conversation rises back to the top.
     stamp = datetime.now(timezone.utc).isoformat()
-    return {"history": [], "brief": {}, "last_draft": None, "pending_needs": None,
-            "title": "", "created": stamp, "updated": stamp}
+    # last_visual is the design the conversation is currently talking about
+    # ({design_id, channel}) — deliberately separate from last_draft, which is
+    # text. It's what makes "change the headline" edit the existing design
+    # instead of generating a new one.
+    return {"history": [], "brief": {}, "last_draft": None, "last_visual": None,
+            "pending_needs": None, "title": "", "created": stamp, "updated": stamp}
 
 
 def _get_session(session_id):
@@ -546,29 +600,43 @@ def route(message, session=None):
         words = len(session["last_draft"].split())
         draft_block = f"PREVIOUS DRAFT LENGTH: {words} words\n"
 
+    # Whether an editable visual exists is what makes revise_visual available at
+    # all, and the router can't tell from the history text alone (a visual turn
+    # reads only as "Made a visual for LinkedIn.").
+    visual_block = ""
+    if session and session.get("last_visual"):
+        channel = session["last_visual"].get("channel") or "unknown channel"
+        visual_block = (
+            f"CURRENT VISUAL: a {channel} visual exists in this conversation and its text "
+            "can be edited.\n"
+        )
+
     prompt = ROUTER_PROMPT.format(
         channels=", ".join(f'"{c}"' for c in CHANNELS),
         formats=", ".join(f'"{f}"' for f in TARGET_FORMATS),
         history_block=history_block,
         draft_block=draft_block,
+        visual_block=visual_block,
         message=message,
     )
 
-    response = client.models.generate_content(
-        model=MODEL_NAME,
-        contents=prompt,
-        config=types.GenerateContentConfig(
-            response_mime_type="application/json",
-            response_schema=ROUTE_SCHEMA,
-            # This is classification/extraction, not creative writing — the
-            # default temperature let identical follow-ups ("professional"
-            # answering a tone question) sometimes route correctly and
-            # sometimes come back as a fresh, context-free request, wiping
-            # the brief built up so far. Low temperature makes the same input
-            # route the same way.
-            temperature=0.1,
-        ),
-    )
+    with model_span("route", prompt, MODEL_NAME) as span:
+        response = client.models.generate_content(
+            model=MODEL_NAME,
+            contents=prompt,
+            config=types.GenerateContentConfig(
+                response_mime_type="application/json",
+                response_schema=ROUTE_SCHEMA,
+                # This is classification/extraction, not creative writing — the
+                # default temperature let identical follow-ups ("professional"
+                # answering a tone question) sometimes route correctly and
+                # sometimes come back as a fresh, context-free request, wiping
+                # the brief built up so far. Low temperature makes the same input
+                # route the same way.
+                temperature=0.1,
+            ),
+        )
+        span.record(response)
     routed = json.loads(response.text)
 
     if "plan" not in routed.get("intents", []):
@@ -626,6 +694,11 @@ QUESTIONS = {
     "source_content": "Paste the content you want repurposed.",
     "target_format": f"What should I repurpose it into? ({', '.join(TARGET_FORMATS)})",
     "timeframe": "What period should the calendar cover? (e.g. next 2 weeks, August)",
+    "design_id": (
+        "I don't have a visual in this conversation to edit yet. Tell me what to make one "
+        "about and which channel it's for, and I'll design it first."
+    ),
+    "instruction": "What should I change on the visual?",
     "channels": f"Which channels should it cover? ({', '.join(CHANNELS)})",
 }
 
@@ -829,6 +902,15 @@ def _handle_message_events(message, session_id="default"):
                 if fallback is not None:
                     routed[field] = fallback
 
+    # The router drops visual_note maybe a third of the time — it's one field in
+    # a long extraction list, and losing it turned "change the headline to X"
+    # into "What should I change on the visual?". The message IS the instruction
+    # here, so fall back to it verbatim rather than asking for what the user just
+    # said. Set on `routed`, not `brief`, so it also overwrites a stale note left
+    # by an earlier edit in the same conversation.
+    if "revise_visual" in intents and not routed.get("visual_note"):
+        routed["visual_note"] = message
+
     # A bare follow-up naming one channel ("linkedin") sometimes lands in the
     # singular `channel` slot instead of the plural `channels` a plan needs.
     # Left alone, `channels` never fills and the same question repeats forever.
@@ -858,6 +940,13 @@ def _handle_message_events(message, session_id="default"):
     # A revision needs the draft it is revising. Without this the Generator would
     # regenerate from the brief alone and "make it shorter" would have nothing to
     # be shorter than.
+    # Which design an edit applies to is remembered, never extracted from the
+    # message — the user says "change the headline", not a design ID. Injected
+    # under aliased keys so it can't collide with the text brief's own channel.
+    if "revise_visual" in intents and session.get("last_visual"):
+        brief["design_id"] = session["last_visual"]["design_id"]
+        brief["visual_channel"] = session["last_visual"].get("channel")
+
     if brief.get("revision_note") and session["last_draft"]:
         brief["previous_draft"] = session["last_draft"]
     else:
@@ -1015,13 +1104,39 @@ def _handle_message_events(message, session_id="default"):
             verdict = "Looks good" if output.get("verdict") == "pass" else "Needs work"
             replies.append(f"{verdict} — {output.get('overall_score')}/100. {output.get('summary', '')}")
         elif spec["produces"] == "visual":
-            # generate_visual returns the model's raw final turn (which should
-            # contain the Canva export URL per designer.py's prompt) rather than
-            # a parsed field — surface it as-is until that gets tightened up.
+            # generate_visual returns a parsed dict, so the export URL goes out
+            # as its own field for the frontend to render as an image rather
+            # than buried in the reply text.
             #
             # Not last_draft: a visual is not text, so "make it shorter" must
             # never try to revise it. Same reasoning as a calendar.
-            replies.append(f"Made a visual for {params['channel']}: {output}")
+            #
+            # NOTE: output["export_url"] is a presigned Canva link that expires
+            # (~18 hours). It's fine in a live reply, but anything that stores
+            # this turn for later should keep design_id/edit_url instead — see
+            # generate_visual's docstring.
+            result["visual"] = output
+            # Remembered so a follow-up ("change the headline to X") edits THIS
+            # design rather than generating a new one. Stores the durable
+            # design_id, never the expiring export URL.
+            session["last_visual"] = {
+                "design_id": output["design_id"],
+                "channel": output.get("channel"),
+            }
+            # The URL deliberately stays out of the reply line: it's a ~600
+            # character presigned link, the frontend renders the image from
+            # result["visual"] anyway, and this same text is replayed into the
+            # router as conversation history, where it would be pure noise.
+            if intent == "revise_visual":
+                # Says what changed, because the reply is also the router's
+                # record of this turn — "Updated the visual." alone would leave a
+                # following "make it shorter" with nothing to anchor to.
+                changed = "; ".join(output.get("revised") or [])
+                replies.append(
+                    f"Updated the visual's text{': ' + changed if changed else ''}."
+                )
+            else:
+                replies.append(f"Made a visual for {params['channel']}.")
 
     # Lets the frontend offer a "Review" action on a draft/repurposed card
     # without asking the user which channel it was written for.

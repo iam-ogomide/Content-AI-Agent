@@ -358,6 +358,38 @@ button {
   font-size: 0.78rem;
 }
 
+.visual-btn {
+  padding: 4px 10px;
+  font-size: 0.78rem;
+  text-decoration: none;
+  /* .ghost-btn is styled for <button>; these two are anchors, which don't
+     inherit the button's centring. */
+  display: inline-flex;
+  align-items: center;
+}
+
+.visual-image {
+  display: block;
+  width: 100%;
+  height: auto;
+  margin-top: 10px;
+  border-radius: 8px;
+  border: 1px solid var(--border);
+  background: var(--surface); /* fills the reserved box while the PNG loads */
+}
+
+.visual-meta {
+  color: var(--muted);
+  font-size: 0.82rem;
+  margin: 8px 0 0;
+}
+
+.visual-expired {
+  color: var(--muted);
+  font-size: 0.82rem;
+  margin: 10px 0 0;
+}
+
 .review-error {
   color: var(--error);
   font-size: 0.82rem;

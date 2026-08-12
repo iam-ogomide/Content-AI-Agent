@@ -6,6 +6,8 @@ from dotenv import load_dotenv
 from google import genai
 from google.genai import types
 
+from tracing import model_span
+
 load_dotenv()
 
 BRAND_VOICE_PATH = Path(__file__).resolve().parent.parent / "brand_voice.md"
@@ -144,12 +146,14 @@ def review_draft(draft, channel, brief=None):
     client = _get_client()
     prompt = build_prompt(draft, channel, brief)
 
-    response = client.models.generate_content(
-        model=MODEL_NAME,
-        contents=prompt,
-        config=types.GenerateContentConfig(
-            response_mime_type="application/json",
-            response_schema=REVIEW_SCHEMA,
-        ),
-    )
+    with model_span("review_draft", prompt, MODEL_NAME) as span:
+        response = client.models.generate_content(
+            model=MODEL_NAME,
+            contents=prompt,
+            config=types.GenerateContentConfig(
+                response_mime_type="application/json",
+                response_schema=REVIEW_SCHEMA,
+            ),
+        )
+        span.record(response)
     return json.loads(response.text)

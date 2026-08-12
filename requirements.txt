@@ -1,7 +1,15 @@
-google-genai
-python-dotenv
-flask
-openpyxl
-pypdf
-pymongo
-mcp
+# Pinned to the versions this system is running and tested against.
+google-genai==2.15.0
+python-dotenv==1.2.2
+flask==3.1.3
+openpyxl==3.1.5
+pypdf==6.15.0
+pymongo==4.17.0
+# Pin this one especially: mcp 2.x vendors its own httpx fork (httpx2), which is
+# why designer.py passes http_client=httpx2.AsyncClient(auth=...) instead of
+# auth=. On mcp 1.x that call signature doesn't exist and Canva breaks at import.
+mcp==2.0.0
+# Only needed when LANGSMITH_TRACING=true. backend/tracing.py imports it lazily
+# and runs fine without it, so a deployment that isn't tracing can drop this —
+# but backend/tracing.py ITSELF is not optional: six modules import it.
+langsmith==0.10.18

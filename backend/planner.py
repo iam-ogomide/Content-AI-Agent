@@ -20,6 +20,7 @@ from google import genai
 from google.genai import types
 
 from product_context import load_product_context
+from tracing import model_span
 
 load_dotenv()
 
@@ -204,12 +205,14 @@ def generate_plan(timeframe, channels, pillars=None, theme=None, icp=None,
     client = _get_client()
     prompt = build_prompt(timeframe, channels, pillars, theme, icp, posts_per_week, today)
 
-    response = client.models.generate_content(
-        model=MODEL_NAME,
-        contents=prompt,
-        config=types.GenerateContentConfig(
-            response_mime_type="application/json",
-            response_schema=PLAN_SCHEMA,
-        ),
-    )
+    with model_span("generate_plan", prompt, MODEL_NAME) as span:
+        response = client.models.generate_content(
+            model=MODEL_NAME,
+            contents=prompt,
+            config=types.GenerateContentConfig(
+                response_mime_type="application/json",
+                response_schema=PLAN_SCHEMA,
+            ),
+        )
+        span.record(response)
     return json.loads(response.text)

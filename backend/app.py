@@ -1,4 +1,5 @@
 import json
+import traceback
 from pathlib import Path
 
 from flask import Flask, Response, jsonify, request, send_file, send_from_directory, stream_with_context
@@ -14,6 +15,20 @@ from reviewer import review_draft
 FRONTEND_DIR = Path(__file__).resolve().parent.parent / "frontend"
 
 app = Flask(__name__, static_folder=str(FRONTEND_DIR), static_url_path="")
+
+
+def _log_failure(what, exc):
+    """Print the full traceback to the terminal, then hand back the error.
+
+    The browser only ever sees a one-line message, which is right for the user
+    but useless for debugging: a Canva blip raised inside the MCP task group
+    arrives as "unhandled errors in a TaskGroup (1 sub-exception)" and, without
+    this, that string is the ONLY record anywhere of what happened. Log first,
+    always, so a failure the user reports can actually be traced.
+    """
+    print(f"\n--- {what} failed: {type(exc).__name__}: {exc}", flush=True)
+    traceback.print_exception(type(exc), exc, exc.__traceback__)
+    return exc
 
 
 @app.route("/")
@@ -38,9 +53,9 @@ def generate():
     try:
         draft = generate_draft(topic, channel, tone, audience, cta, keyword)
     except RuntimeError as e:
-        return jsonify({"error": str(e)}), 500
+        return jsonify({"error": str(_log_failure("Generation", e))}), 500
     except Exception as e:
-        return jsonify({"error": f"Generation failed: {e}"}), 502
+        return jsonify({"error": f"Generation failed: {_log_failure('Generation', e)}"}), 502
 
     return jsonify({"draft": draft})
 
@@ -60,9 +75,9 @@ def repurpose():
     try:
         result = repurpose_content(source_content, target_format, tone_shift, word_limit)
     except RuntimeError as e:
-        return jsonify({"error": str(e)}), 500
+        return jsonify({"error": str(_log_failure("Repurposing", e))}), 500
     except Exception as e:
-        return jsonify({"error": f"Repurposing failed: {e}"}), 502
+        return jsonify({"error": f"Repurposing failed: {_log_failure('Repurposing', e)}"}), 502
 
     return jsonify({"result": result})
 
@@ -87,9 +102,9 @@ def plan():
     try:
         calendar = generate_plan(timeframe, channels, pillars, theme, icp, posts_per_week)
     except RuntimeError as e:
-        return jsonify({"error": str(e)}), 500
+        return jsonify({"error": str(_log_failure("Planning", e))}), 500
     except Exception as e:
-        return jsonify({"error": f"Planning failed: {e}"}), 502
+        return jsonify({"error": f"Planning failed: {_log_failure('Planning', e)}"}), 502
 
     return jsonify({"calendar": calendar})
 
@@ -105,7 +120,7 @@ def export_plan():
     try:
         buf = calendar_to_xlsx_bytes(calendar)
     except Exception as e:
-        return jsonify({"error": f"Export failed: {e}"}), 500
+        return jsonify({"error": f"Export failed: {_log_failure('Export', e)}"}), 500
 
     return send_file(
         buf,
@@ -138,9 +153,9 @@ def review():
     try:
         report = review_draft(draft, channel, brief)
     except RuntimeError as e:
-        return jsonify({"error": str(e)}), 500
+        return jsonify({"error": str(_log_failure("Review", e))}), 500
     except Exception as e:
-        return jsonify({"error": f"Review failed: {e}"}), 502
+        return jsonify({"error": f"Review failed: {_log_failure('Review', e)}"}), 502
 
     return jsonify({"report": report})
 
@@ -166,8 +181,10 @@ def chat():
             for event in handle_message_stream(message, session_id):
                 yield json.dumps(event) + "\n"
         except RuntimeError as e:
+            _log_failure("Chat", e)
             yield json.dumps({"type": "error", "error": str(e)}) + "\n"
         except Exception as e:
+            _log_failure("Chat", e)
             yield json.dumps({"type": "error", "error": f"Orchestration failed: {e}"}) + "\n"
 
     return Response(stream_with_context(event_stream()), mimetype="application/x-ndjson")

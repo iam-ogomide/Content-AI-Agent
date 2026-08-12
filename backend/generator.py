@@ -5,6 +5,7 @@ from dotenv import load_dotenv
 from google import genai
 
 from product_context import load_product_context
+from tracing import model_span
 
 load_dotenv()
 
@@ -177,10 +178,12 @@ def generate_draft(topic, channel, tone, audience=None, cta=None, keyword=None, 
     prompt = build_prompt(topic, channel, tone, audience, cta, keyword, word_limit,
                           previous_draft, revision_note)
 
-    response = client.models.generate_content(
-        model=MODEL_NAME,
-        contents=prompt,
-    )
+    with model_span("generate_draft", prompt, MODEL_NAME) as span:
+        response = client.models.generate_content(
+            model=MODEL_NAME,
+            contents=prompt,
+        )
+        span.record(response)
     return response.text
 
 
@@ -194,6 +197,16 @@ def generate_draft_stream(topic, channel, tone, audience=None, cta=None, keyword
     prompt = build_prompt(topic, channel, tone, audience, cta, keyword, word_limit,
                           previous_draft, revision_note)
 
-    for chunk in client.models.generate_content_stream(model=MODEL_NAME, contents=prompt):
-        if chunk.text:
-            yield chunk.text
+    # The span covers the whole stream, and records the assembled text at the
+    # end — there is no single response object to read here. Pieces are kept as
+    # they're yielded so an abandoned stream still logs what got through.
+    with model_span("generate_draft_stream", prompt, MODEL_NAME) as span:
+        pieces, last = [], None
+        try:
+            for chunk in client.models.generate_content_stream(model=MODEL_NAME, contents=prompt):
+                last = chunk  # token counts ride on the final chunk
+                if chunk.text:
+                    pieces.append(chunk.text)
+                    yield chunk.text
+        finally:
+            span.record_text("".join(pieces), last)
